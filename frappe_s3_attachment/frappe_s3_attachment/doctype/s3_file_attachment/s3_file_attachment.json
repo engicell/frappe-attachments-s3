@@ -14,6 +14,74 @@
  "engine": "InnoDB", 
  "fields": [
   {
+   "fieldname": "general_configuration",
+   "fieldtype": "Section Break",
+   "label": "General Configuration"
+  },
+  {
+   "fieldname": "delete_file_from_cloud",
+   "fieldtype": "Check",
+   "label": "Delete file from cloud "
+  },
+  {
+   "fieldname": "aws_credentials",
+   "fieldtype": "Section Break",
+   "label": "AWS credentials"
+  },
+  {
+   "fieldname": "bucket_name",
+   "fieldtype": "Data",
+   "label": "Bucket Name"
+  },
+  {
+   "fieldname": "aws_key",
+   "fieldtype": "Data",
+   "label": "AWS Key"
+  },
+  {
+   "fieldname": "aws_secret",
+   "fieldtype": "Data",
+   "label": "AWS Secret"
+  },
+  {
+   "fieldname": "section_break_7",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "region_name",
+   "fieldtype": "Data",
+   "label": "S3 Bucket Region Name"
+  },
+  {
+   "fieldname": "endpoint_url",
+   "fieldtype": "Data",
+   "label": "Endpoint URL",
+   "description": "Custom endpoint for S3-compatible providers (e.g., MinIO, Cloudflare R2)"
+  },
+  {
+   "fieldname": "folder_name",
+   "fieldtype": "Data",
+   "label": "Folder Name"
+  },
+  {
+   "fieldname": "signed_url_expiry_time",
+   "fieldtype": "Int",
+   "label": "Signed URL expiry time",
+   "default": "300",
+   "description": "time should be in seconds"
+  },
+  {
+   "fieldname": "section_break_10",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "migrate_existing_files",
+   "fieldtype": "Button",
+   "label": "Migrate Existing Files"
+  }
+ ]
+}
+   {
    "allow_bulk_edit": 0, 
    "allow_in_quick_entry": 0, 
    "allow_on_submit": 0, 
