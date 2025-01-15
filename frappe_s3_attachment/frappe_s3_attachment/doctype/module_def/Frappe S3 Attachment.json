@@ -1,0 +1,6 @@
+{
+ "doctype": "Module Def",
+ "module_name": "Frappe S3 Attachment",
+ "app_name": "frappe_s3_attachment",
+ "custom": 0
+}
