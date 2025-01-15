@@ -58,41 +58,41 @@ class S3Operations(object):
         return file_name
 
     def key_generator(self, file_name, parent_doctype, parent_name):
-    """
-    Generate keys for S3 objects uploaded with file name attached.
-    Format: {folder}/{doctype}/{file_hash}
-    """
-    # Check for custom S3 key generator via hooks
-    hook_cmd = frappe.get_hooks().get("s3_key_generator")
-    if hook_cmd:
-        try:
-            k = frappe.get_attr(hook_cmd[0])(
-                file_name=file_name,
-                parent_doctype=parent_doctype,
-                parent_name=parent_name
-            )
-            if k:
-                return k.rstrip('/').lstrip('/')
-        except:
-            pass
+        """
+        Generate keys for s3 objects uploaded with file name attached.
+        """
+        hook_cmd = frappe.get_hooks().get("s3_key_generator")
+        if hook_cmd:
+            try:
+                k = frappe.get_attr(hook_cmd[0])(
+                    file_name=file_name,
+                    parent_doctype=parent_doctype,
+                    parent_name=parent_name
+                )
+                if k:
+                    return k.rstrip('/').lstrip('/')
+            except:
+                pass
 
-    # Sanitize the file name
-    file_name = file_name.replace(' ', '_')
-    file_name = self.strip_special_chars(file_name)
+        file_name = file_name.replace(' ', '_')
+        file_name = self.strip_special_chars(file_name)
+        key = ''.join(
+            random.choice(
+                string.ascii_uppercase + string.digits) for _ in range(8)
+        )
 
-    # Generate a unique file hash
-    file_hash = ''.join(
-        random.choice(string.ascii_uppercase + string.digits) for _ in range(8)
-    )
+        doc_path = None
 
-    # Generate the path in the desired format
-    if self.folder_name:
-        final_key = f"{self.folder_name}/{parent_doctype}/{file_hash}_{file_name}"
-    else:
-        final_key = f"{parent_doctype}/{file_hash}_{file_name}"
-
-    return final_key
-
+        if not doc_path:
+            if self.folder_name:
+                final_key = self.folder_name + "/" + parent_doctype + "/" + key + "_" + \
+                    file_name
+            else:
+                final_key = parent_doctype + "/" + key + "_" + file_name
+            return final_key
+        else:
+            final_key = doc_path + '/' + key + "_" + file_name
+            return final_key
 
     def upload_files_to_s3_with_key(
             self, file_path, file_name, is_private, parent_doctype, parent_name
