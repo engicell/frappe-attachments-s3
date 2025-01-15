@@ -10,6 +10,7 @@ app_icon = "octicon octicon-file-directory"
 app_color = "grey"
 app_email = "ramesh.ravi@zerodha.com"
 app_license = "MIT"
+fixtures = ["Custom Field", "DocType"]
 
 # Includes in <head>
 # ------------------
