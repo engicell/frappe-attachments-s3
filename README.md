@@ -13,7 +13,7 @@ Frappe app to make file upload automatically upload and read from s3.
     files.
 4. Deletes from s3 whenever a file is deleted in ui.
 5. Files are uploaded categorically in the format.
-    {s3_folder_path}/{year}/{month}/{day}/{doctype}/{file_hash}
+    {s3_folder_path}/{doctype}/{file_hash}_{FILE_NAME}
 
 #### Installation.
 
