@@ -57,80 +57,84 @@ class S3Operations(object):
         file_name = regex.sub('', file_name)
         return file_name
 
-    def key_generator(self, file_name, parent_doctype, parent_name):
-        """
-        Generate keys for s3 objects uploaded with file name attached.
-        """
-        hook_cmd = frappe.get_hooks().get("s3_key_generator")
-        if hook_cmd:
-            try:
-                k = frappe.get_attr(hook_cmd[0])(
-                    file_name=file_name,
-                    parent_doctype=parent_doctype,
-                    parent_name=parent_name
-                )
-                if k:
-                    return k.rstrip('/').lstrip('/')
-            except:
-                pass
-
-        file_name = file_name.replace(' ', '_')
-        file_name = self.strip_special_chars(file_name)
-        key = ''.join(
-            random.choice(
-                string.ascii_uppercase + string.digits) for _ in range(8)
-        )
-
-        doc_path = None
-
-        if not doc_path:
-            if self.folder_name:
-                final_key = self.folder_name + "/" + country_doctype + "/" + company_doctype + "/" + parent_doctype + "/" + key + "_" + file_name
-            else:
-                final_key = country_doctype + "/" + company_doctype + "/" + parent_doctype + "/" + key + "_" + file_name
-            return final_key
-        else:
-            final_key = doc_path + '/' + key + "_" + file_name
-            return final_key
-
-    def upload_files_to_s3_with_key(
-            self, file_path, file_name, is_private, parent_doctype, parent_name
-    ):
-        """
-        Uploads a new file to S3.
-        Strips the file extension to set the content_type in metadata.
-        """
-        mime_type = magic.from_file(file_path, mime=True)
-        key = self.key_generator(file_name, parent_doctype, parent_name)
-        content_type = mime_type
+def key_generator(self, file_name, parent_doctype, parent_name, country_doctype=None, company_doctype=None):
+    """
+    Generate keys for S3 objects uploaded with file name attached.
+    """
+    hook_cmd = frappe.get_hooks().get("s3_key_generator")
+    if hook_cmd:
         try:
-            if is_private:
-                self.S3_CLIENT.upload_file(
-                    file_path, self.BUCKET, key,
-                    ExtraArgs={
-                        "ContentType": content_type,
-                        "Metadata": {
-                            "ContentType": content_type,
-                            "file_name": file_name
-                        }
-                    }
-                )
-            else:
-                self.S3_CLIENT.upload_file(
-                    file_path, self.BUCKET, key,
-                    ExtraArgs={
-                        "ContentType": content_type,
-                        "ACL": 'public-read',
-                        "Metadata": {
-                            "ContentType": content_type,
+            k = frappe.get_attr(hook_cmd[0])(
+                file_name=file_name,
+                parent_doctype=parent_doctype,
+                parent_name=parent_name
+            )
+            if k:
+                return k.rstrip('/').lstrip('/')
+        except:
+            pass
 
-                        }
-                    }
-                )
+    file_name = file_name.replace(' ', '_')
+    file_name = self.strip_special_chars(file_name)
+    key = ''.join(
+        random.choice(
+            string.ascii_uppercase + string.digits) for _ in range(8)
+    )
 
-        except boto3.exceptions.S3UploadFailedError:
-            frappe.throw(frappe._("File Upload Failed. Please try again."))
-        return key
+    # Validate or set default values for country and company
+    country_doctype = country_doctype or "default_country"
+    company_doctype = company_doctype or "default_company"
+
+    doc_path = None
+
+    if not doc_path:
+        if self.folder_name:
+            final_key = self.folder_name + "/" + country_doctype + "/" + company_doctype + "/" + parent_doctype + "/" + key + "_" + file_name
+        else:
+            final_key = country_doctype + "/" + company_doctype + "/" + parent_doctype + "/" + key + "_" + file_name
+        return final_key
+    else:
+        final_key = doc_path + '/' + key + "_" + file_name
+        return final_key
+
+def upload_files_to_s3_with_key(
+        self, file_path, file_name, is_private, parent_doctype, parent_name, country_doctype=None, company_doctype=None
+):
+    """
+    Uploads a new file to S3.
+    Strips the file extension to set the content_type in metadata.
+    """
+    mime_type = magic.from_file(file_path, mime=True)
+    key = self.key_generator(file_name, parent_doctype, parent_name, country_doctype, company_doctype)
+    content_type = mime_type
+    try:
+        if is_private:
+            self.S3_CLIENT.upload_file(
+                file_path, self.BUCKET, key,
+                ExtraArgs={
+                    "ContentType": content_type,
+                    "Metadata": {
+                        "ContentType": content_type,
+                        "file_name": file_name
+                    }
+                }
+            )
+        else:
+            self.S3_CLIENT.upload_file(
+                file_path, self.BUCKET, key,
+                ExtraArgs={
+                    "ContentType": content_type,
+                    "ACL": 'public-read',
+                    "Metadata": {
+                        "ContentType": content_type,
+                        "file_name": file_name
+                    }
+                }
+            )
+    except Exception as e:
+        frappe.log_error(f"Error uploading file to S3: {str(e)}")
+        raise
+
 
     def delete_from_s3(self, key):
         """ Delete file from s3"""
