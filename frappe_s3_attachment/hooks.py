@@ -4,12 +4,14 @@ from . import __version__ as app_version
 
 app_name = "frappe_s3_attachment"
 app_title = "Frappe S3 Attachment"
-app_publisher = "Frappe"
+app_publisher = "Engicell"
 app_description = "Frappe app to make file upload to S3 through attach file option."
 app_icon = "octicon octicon-file-directory"
 app_color = "grey"
-app_email = "ramesh.ravi@zerodha.com"
+app_email = "info@engicell.com"
 app_license = "MIT"
+minimum_frappe_version = "13.0"
+minimum_erpnext_version = "13.0"
 fixtures = ["Custom Field", "DocType"]
 
 # Includes in <head>
