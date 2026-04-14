@@ -447,10 +447,12 @@ def test_s3_connection():
             folder_stripped = s3.folder_name.strip('/')
             test_key = folder_stripped + "/" + test_key
             
+        body_content = b"S3 Connection Successful! Your S3 configuration inside ERPNext is fully operational."
         s3.S3_CLIENT.put_object(
             Bucket=s3.BUCKET,
             Key=test_key,
-            Body=b"S3 Connection Successful! Your S3 configuration inside ERPNext is fully operational.",
+            Body=body_content,
+            ContentLength=len(body_content),
             ContentType="text/plain"
         )
         
