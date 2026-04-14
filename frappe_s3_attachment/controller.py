@@ -436,7 +436,10 @@ def delete_from_cloud(doc, method):
 @frappe.whitelist()
 def test_s3_connection():
     """
-    Test S3 Connection by uploading a small text file and returning links.
+    Test S3 Connection in three stages:
+    1. head_bucket  - verify credentials/endpoint (no upload = no Content-Length needed)
+    2. list_objects - verify list permissions
+    3. Presigned PUT via requests library - test actual upload without boto3 chunked transfer
     """
     if not frappe.db.get_single_value("S3 File Attachment", "enabled"):
         frappe.msgprint(frappe._("Please enable S3 File Attachment settings first."))
@@ -444,43 +447,105 @@ def test_s3_connection():
 
     try:
         s3 = S3Operations()
+
+        # ── Stage 1: credentials + endpoint reachability ─────────────────────
+        try:
+            s3.S3_CLIENT.head_bucket(Bucket=s3.BUCKET)
+        except Exception as e:
+            frappe.throw(
+                f"<b>Stage 1 Failed: Cannot reach bucket '{s3.BUCKET}'</b><br><br>"
+                f"Check your Bucket Name, Endpoint URL, and credentials.<br><br>"
+                f"Error: {str(e)}",
+                title="S3 Health Check"
+            )
+
+        # ── Stage 2: list permissions ─────────────────────────────────────────
+        try:
+            s3.S3_CLIENT.list_objects_v2(Bucket=s3.BUCKET, MaxKeys=1)
+        except Exception as e:
+            frappe.throw(
+                f"<b>Stage 2 Failed: Cannot list objects in bucket.</b><br><br>"
+                f"Credentials valid but list permission denied.<br><br>"
+                f"Error: {str(e)}",
+                title="S3 Health Check"
+            )
+
+        # ── Stage 3: upload via presigned PUT + requests library ─────────────
+        # requests sets Content-Length automatically from the body bytes —
+        # completely bypasses boto3 internal chunked transfer encoding.
+        import requests as req_lib
+
         test_key = "s3_connection_test_" + frappe.generate_hash()[:8] + ".txt"
-
         if s3.folder_name:
-            folder_stripped = s3.folder_name.strip('/')
-            test_key = folder_stripped + "/" + test_key
-            
-        import io
+            test_key = s3.folder_name.strip('/') + "/" + test_key
 
-        # Use raw BytesIO + explicit ContentLength to bypass boto3's chunked
-        # transfer manager. This is the only method universally compatible
-        # with strict providers like Oracle Cloud Object Storage that enforce
-        # the Content-Length header on every upload request.
-        body_bytes = b"S3 Connection Successful! Your S3 configuration inside ERPNext is fully operational."
-        s3.S3_CLIENT.put_object(
-            Bucket=s3.BUCKET,
-            Key=test_key,
-            Body=io.BytesIO(body_bytes),
-            ContentLength=len(body_bytes),
-            ContentType="text/plain",
-        )
-        
-        public_url = s3.get_public_url(test_key)
-        presigned_url = s3.get_url(test_key)
+        body_bytes = b"S3 Connection Test - ERPNext S3 Attachment"
+        upload_ok = False
+        upload_error = ""
 
-        msg = f"""
-        <div style="font-size: 14px;">
-            <p style="color: green; font-weight: bold;">S3 Connection & Upload Successful!</p>
-            <p>We verified the credentials and correctly uploaded a test file to your S3 bucket.</p>
-            <ul>
-                <li><a href="{public_url}" target="_blank"><b>Test Public URL</b></a> (Note: Will only work if your Bucket is set to Public-Read)</li>
-                <li><a href="{presigned_url}" target="_blank"><b>Test Private URL</b></a> (Uses highly secure pre-signed tokens)</li>
-            </ul>
-        </div>
-        """
+        try:
+            presigned_put = s3.S3_CLIENT.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": s3.BUCKET,
+                    "Key": test_key,
+                    "ContentType": "text/plain",
+                },
+                ExpiresIn=120,
+            )
+            resp = req_lib.put(
+                presigned_put,
+                data=body_bytes,
+                headers={"Content-Type": "text/plain"},
+                verify=s3.verify_ssl,
+                timeout=30,
+            )
+            if resp.status_code in (200, 201, 204):
+                upload_ok = True
+            else:
+                upload_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+        except Exception as e:
+            upload_error = str(e)
+
+        # ── Build result ──────────────────────────────────────────────────────
+        if upload_ok:
+            public_url = s3.get_public_url(test_key)
+            presigned_url = s3.get_url(test_key)
+            msg = f"""
+            <div style="font-size:14px;">
+                <p style="color:green;font-weight:bold;">&#10003; All S3 Checks Passed!</p>
+                <ul>
+                    <li>&#10003; Bucket reachable &amp; credentials valid</li>
+                    <li>&#10003; List objects permission OK</li>
+                    <li>&#10003; Test file uploaded successfully</li>
+                </ul>
+                <p><b>Test file links:</b></p>
+                <ul>
+                    <li><a href="{public_url}" target="_blank"><b>Public URL</b></a>
+                        (works if bucket is Public-Read)</li>
+                    <li><a href="{presigned_url}" target="_blank"><b>Private Pre-signed URL</b></a></li>
+                </ul>
+            </div>
+            """
+        else:
+            msg = f"""
+            <div style="font-size:14px;">
+                <p style="color:orange;font-weight:bold;">&#9888; Partial Success</p>
+                <ul>
+                    <li>&#10003; Bucket reachable &amp; credentials valid</li>
+                    <li>&#10003; List objects permission OK</li>
+                    <li>&#10007; Upload test failed: {upload_error}</li>
+                </ul>
+                <p>Credentials and endpoint are correct. Upload failure may be
+                due to bucket write permissions or ACL policy.</p>
+            </div>
+            """
+
         frappe.msgprint(msg, title="S3 Health Check")
         return True
 
+    except frappe.ValidationError:
+        raise
     except Exception as e:
         import traceback
         frappe.log_error(message=traceback.format_exc(), title="S3 Test Failed")
