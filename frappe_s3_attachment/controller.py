@@ -450,25 +450,20 @@ def test_s3_connection():
             folder_stripped = s3.folder_name.strip('/')
             test_key = folder_stripped + "/" + test_key
             
-        import tempfile
-        import os
-        
-        with tempfile.NamedTemporaryFile(delete=False, mode="w") as test_file:
-            test_file.write("S3 Connection Successful! Your S3 configuration inside ERPNext is fully operational.")
-            temp_file_path = test_file.name
-            
-        try:
-            s3.S3_CLIENT.upload_file(
-                temp_file_path, 
-                s3.BUCKET, 
-                test_key,
-                ExtraArgs={
-                    "ContentType": "text/plain"
-                }
-            )
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+        import io
+
+        # Use raw BytesIO + explicit ContentLength to bypass boto3's chunked
+        # transfer manager. This is the only method universally compatible
+        # with strict providers like Oracle Cloud Object Storage that enforce
+        # the Content-Length header on every upload request.
+        body_bytes = b"S3 Connection Successful! Your S3 configuration inside ERPNext is fully operational."
+        s3.S3_CLIENT.put_object(
+            Bucket=s3.BUCKET,
+            Key=test_key,
+            Body=io.BytesIO(body_bytes),
+            ContentLength=len(body_bytes),
+            ContentType="text/plain",
+        )
         
         public_url = s3.get_public_url(test_key)
         presigned_url = s3.get_url(test_key)
