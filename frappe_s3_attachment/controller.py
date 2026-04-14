@@ -473,5 +473,4 @@ def test_s3_connection():
     except Exception as e:
         import traceback
         frappe.log_error(message=traceback.format_exc(), title="S3 Test Failed")
-        frappe.msgprint(f"<b>Connection to S3 Failed!</b><br><br>Error: {str(e)}", title="S3 Health Check", indicator="red")
-        return False
+        frappe.throw(f"<b>Connection to S3 Failed!</b><br><br>Error: {str(e)}", title="S3 Health Check")
