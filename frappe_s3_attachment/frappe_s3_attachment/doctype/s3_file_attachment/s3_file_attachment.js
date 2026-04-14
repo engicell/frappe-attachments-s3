@@ -19,4 +19,13 @@ frappe.ui.form.on('S3 File Attachment', {
             }
         });
     },
+	test_s3_connection: function(frm) {
+		frappe.msgprint("Testing S3 connection... this may take a moment", "Testing");
+		frappe.call({
+			method: "frappe_s3_attachment.controller.test_s3_connection",
+			callback: function(data) {
+				// The server will handle its own success/error msgprints
+			}
+		});
+	}
 });

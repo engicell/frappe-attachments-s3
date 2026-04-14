@@ -101,6 +101,12 @@
    "fieldname": "migrate_existing_files",
    "fieldtype": "Button",
    "label": "Migrate Existing Files"
+  },
+  {
+   "fieldname": "test_s3_connection",
+   "fieldtype": "Button",
+   "label": "Test S3 Connection",
+   "description": "Upload a test file and generate public/private download links to verify S3 is working."
   }
  ],
  "has_web_view": 0,

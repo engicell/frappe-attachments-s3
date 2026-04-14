@@ -431,8 +431,47 @@ def delete_from_cloud(doc, method):
 
 
 @frappe.whitelist()
-def ping():
+def test_s3_connection():
     """
-    Test function to check if api function work.
+    Test S3 Connection by uploading a small text file and returning links.
     """
-    return "pong"
+    if not frappe.db.get_single_value("S3 File Attachment", "enabled"):
+        frappe.msgprint(frappe._("Please enable S3 File Attachment settings first."))
+        return False
+
+    try:
+        s3 = S3Operations()
+        test_key = "s3_connection_test_" + frappe.generate_hash()[:8] + ".txt"
+
+        if s3.folder_name:
+            folder_stripped = s3.folder_name.strip('/')
+            test_key = folder_stripped + "/" + test_key
+            
+        s3.S3_CLIENT.put_object(
+            Bucket=s3.BUCKET,
+            Key=test_key,
+            Body=b"S3 Connection Successful! Your S3 configuration inside ERPNext is fully operational.",
+            ContentType="text/plain"
+        )
+        
+        public_url = s3.get_public_url(test_key)
+        presigned_url = s3.get_url(test_key)
+
+        msg = f"""
+        <div style="font-size: 14px;">
+            <p style="color: green; font-weight: bold;">S3 Connection & Upload Successful!</p>
+            <p>We verified the credentials and correctly uploaded a test file to your S3 bucket.</p>
+            <ul>
+                <li><a href="{public_url}" target="_blank"><b>Test Public URL</b></a> (Note: Will only work if your Bucket is set to Public-Read)</li>
+                <li><a href="{presigned_url}" target="_blank"><b>Test Private URL</b></a> (Uses highly secure pre-signed tokens)</li>
+            </ul>
+        </div>
+        """
+        frappe.msgprint(msg, title="S3 Health Check")
+        return True
+
+    except Exception as e:
+        import traceback
+        frappe.log_error(message=traceback.format_exc(), title="S3 Test Failed")
+        frappe.msgprint(f"<b>Connection to S3 Failed!</b><br><br>Error: {str(e)}", title="S3 Health Check", indicator="red")
+        return False
