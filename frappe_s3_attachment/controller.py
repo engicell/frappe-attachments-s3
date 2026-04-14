@@ -197,8 +197,10 @@ class S3Operations(object):
                     }
                 )
 
-        except boto3.exceptions.S3UploadFailedError:
-            frappe.throw(frappe._("File Upload Failed. Please try again."))
+        except Exception as e:
+            import traceback
+            frappe.log_error(message=traceback.format_exc(), title="S3 File Attachment Upload Failed")
+            return None
         return key
 
     def delete_from_s3(self, key):
@@ -255,7 +257,13 @@ def file_upload_to_s3(doc, method):
     if not frappe.db.get_single_value("S3 File Attachment", "enabled"):
         return
 
-    s3_upload = S3Operations()
+    try:
+        s3_upload = S3Operations()
+    except Exception as e:
+        import traceback
+        frappe.log_error(message=traceback.format_exc(), title="S3 Operations Init Failed")
+        return
+
     path = doc.file_url
     site_path = frappe.utils.get_site_path()
     parent_doctype = doc.attached_to_doctype or 'File'
@@ -274,6 +282,8 @@ def file_upload_to_s3(doc, method):
             doc.is_private, parent_doctype,
             parent_name
         )
+        if not key:
+            return
 
         if doc.is_private:
             method = "frappe_s3_attachment.controller.generate_file"
@@ -343,6 +353,8 @@ def upload_existing_files_s3(name):
             doc.is_private, parent_doctype,
             parent_name
         )
+        if not key:
+            return
 
         if doc.is_private:
             method = "frappe_s3_attachment.controller.generate_file"
