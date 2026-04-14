@@ -121,7 +121,8 @@ class S3Operations(object):
         )
 
         if self.folder_name:
-            final_key = self.folder_name + "/" + parent_doctype + "/" + key + "_" + file_name
+            folder_stripped = self.folder_name.strip('/')
+            final_key = folder_stripped + "/" + parent_doctype + "/" + key + "_" + file_name
         else:
             final_key = parent_doctype + "/" + key + "_" + file_name
         return final_key
@@ -211,8 +212,9 @@ class S3Operations(object):
                     Bucket=self.s3_settings_doc.bucket_name,
                     Key=key
                 )
-            except ClientError:
-                frappe.throw(frappe._("Access denied: Could not delete file"))
+            except Exception as e:
+                import traceback
+                frappe.log_error(message=traceback.format_exc(), title="S3 File Attachment Delete Failed")
 
     def read_file_from_s3(self, key):
         """
@@ -378,7 +380,7 @@ def s3_file_regex_match(file_url):
     Match the public file regex match.
     """
     return re.match(
-        r'^(https:|/api/method/frappe_s3_attachment.controller.generate_file)',
+        r'^(https?:|/api/method/frappe_s3_attachment.controller.generate_file)',
         file_url
     )
 
@@ -392,15 +394,27 @@ def migrate_existing_files():
         frappe.msgprint(frappe._("Please enable S3 File Attachment settings first."))
         return False
 
+    frappe.enqueue(
+        "frappe_s3_attachment.controller.run_migration_in_background",
+        queue="long",
+        timeout=3600
+    )
+    frappe.msgprint(frappe._("File migration started in the background. You can safely close this window."))
+    return True
+
+
+def run_migration_in_background():
+    """
+    Background job to process all local files to S3.
+    """
     files_list = frappe.get_all(
         'File',
         fields=['name', 'file_url']
     )
     for file in files_list:
-        if file['file_url']:
-            if not s3_file_regex_match(file['file_url']):
-                upload_existing_files_s3(file['name'])
-    return True
+        if file.get('file_url'):
+            if not s3_file_regex_match(file.get('file_url')):
+                upload_existing_files_s3(file.get('name'))
 
 
 def delete_from_cloud(doc, method):
@@ -408,8 +422,12 @@ def delete_from_cloud(doc, method):
     if not frappe.db.get_single_value("S3 File Attachment", "enabled"):
         return
         
-    s3 = S3Operations()
-    s3.delete_from_s3(doc.content_hash)
+    try:
+        s3 = S3Operations()
+        s3.delete_from_s3(doc.content_hash)
+    except Exception as e:
+        import traceback
+        frappe.log_error(message=traceback.format_exc(), title="S3 Delete Operations Failed")
 
 
 @frappe.whitelist()
