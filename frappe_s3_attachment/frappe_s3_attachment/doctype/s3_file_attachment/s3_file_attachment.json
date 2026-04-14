@@ -19,14 +19,20 @@
    "label": "General Configuration"
   },
   {
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enable S3 Attachment",
+   "description": "Master switch. Enable this to start uploading new file attachments to your S3-compatible cloud storage."
+  },
+  {
    "fieldname": "delete_file_from_cloud",
    "fieldtype": "Check",
    "label": "Delete file from cloud"
   },
   {
-   "fieldname": "aws_credentials",
+   "fieldname": "storage_credentials",
    "fieldtype": "Section Break",
-   "label": "AWS credentials"
+   "label": "Storage Credentials"
   },
   {
    "fieldname": "bucket_name",
@@ -36,35 +42,60 @@
   {
    "fieldname": "aws_key",
    "fieldtype": "Data",
-   "label": "AWS Key"
+   "label": "Access Key ID"
   },
   {
    "fieldname": "aws_secret",
-   "fieldtype": "Data",
-   "label": "AWS Secret"
+   "fieldtype": "Password",
+   "label": "Secret Access Key"
   },
   {
    "fieldname": "region_name",
    "fieldtype": "Data",
-   "label": "S3 Bucket Region Name"
+   "label": "Region Name",
+   "description": "AWS region (e.g. us-east-1) or provider-specific region. Leave blank if not required."
   },
   {
    "fieldname": "endpoint_url",
    "fieldtype": "Data",
    "label": "Endpoint URL",
-   "description": "Custom endpoint for S3-compatible providers (e.g., MinIO, Cloudflare R2)"
+   "description": "Custom S3-compatible endpoint. Examples: Cloudflare R2 — https://&lt;account_id&gt;.r2.cloudflarestorage.com | Oracle Object Storage — https://&lt;namespace&gt;.compat.objectstorage.&lt;region&gt;.oraclecloud.com | MinIO — http://localhost:9000 | Leave blank for native AWS S3."
+  },
+  {
+   "fieldname": "public_endpoint_url",
+   "fieldtype": "Data",
+   "label": "CDN / Public URL (Optional)",
+   "description": "Used only for public files. Enter your CDN or public domain (e.g. https://cdn.mywebsite.com or https://pub-xxx.r2.dev). If left blank, it falls back to the Endpoint URL."
   },
   {
    "fieldname": "folder_name",
    "fieldtype": "Data",
-   "label": "Folder Name"
+   "label": "Folder Name",
+   "description": "Optional prefix/folder prepended to every uploaded object key."
   },
   {
    "fieldname": "signed_url_expiry_time",
    "fieldtype": "Int",
-   "label": "Signed URL expiry time",
+   "label": "Signed URL Expiry Time (seconds)",
    "default": 300,
-   "description": "Time should be in seconds"
+   "description": "Expiry time in seconds for pre-signed URLs used to access private files."
+  },
+  {
+   "fieldname": "advanced_options",
+   "fieldtype": "Section Break",
+   "label": "Advanced Options"
+  },
+  {
+   "fieldname": "force_path_style",
+   "fieldtype": "Check",
+   "label": "Force Path Style",
+   "description": "Use path-style S3 URLs ({endpoint}/{bucket}/{key}) instead of virtual-hosted style ({bucket}.{endpoint}/{key}). Required for Oracle Object Storage, MinIO, and some other S3-compatible providers."
+  },
+  {
+   "fieldname": "ignore_ssl",
+   "fieldtype": "Check",
+   "label": "Ignore SSL Certificate Verification",
+   "description": "Disable SSL/TLS certificate verification. Use only with self-signed certificates in trusted, internal networks. NOT recommended for production."
   },
   {
    "fieldname": "migrate_existing_files",
@@ -82,8 +113,8 @@
  "issingle": 1,
  "istable": 0,
  "max_attachments": 0,
- "modified": "2018-06-14 16:26:10.781922",
- "modified_by": "shridhar.p@zerodha.com",
+ "modified": "2026-04-14 12:00:00.000000",
+ "modified_by": "Administrator",
  "module": "Frappe S3 Attachment",
  "name": "S3 File Attachment",
  "owner": "Administrator",
