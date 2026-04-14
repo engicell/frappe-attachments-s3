@@ -50,7 +50,10 @@ class S3Operations(object):
 
         s3_config = Config(
             signature_version='s3v4',
-            s3={'addressing_style': addressing_style},
+            s3={
+                'addressing_style': addressing_style,
+                'payload_signing_enabled': False
+            },
         )
 
         # Retrieve password properly for password type fields
