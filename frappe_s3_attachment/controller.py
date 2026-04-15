@@ -448,27 +448,25 @@ def test_s3_connection():
     try:
         s3 = S3Operations()
 
-        # ── Stage 1: credentials + endpoint reachability ─────────────────────
-        try:
-            s3.S3_CLIENT.head_bucket(Bucket=s3.BUCKET)
-        except Exception as e:
-            frappe.throw(
-                f"<b>Stage 1 Failed: Cannot reach bucket '{s3.BUCKET}'</b><br><br>"
-                f"Check your Bucket Name, Endpoint URL, and credentials.<br><br>"
-                f"Error: {str(e)}",
-                title="S3 Health Check"
-            )
-
-        # ── Stage 2: list permissions ─────────────────────────────────────────
+        # ── Stage 1: credentials + bucket access via list_objects_v2 ─────────
+        # NOTE: We intentionally avoid head_bucket here. Oracle OCI's S3
+        # compatibility layer incorrectly throws MissingContentLength on
+        # HEAD requests. list_objects_v2 is a plain HTTP GET with no body
+        # and no Content-Length requirement — works on ALL providers.
         try:
             s3.S3_CLIENT.list_objects_v2(Bucket=s3.BUCKET, MaxKeys=1)
         except Exception as e:
-            frappe.throw(
-                f"<b>Stage 2 Failed: Cannot list objects in bucket.</b><br><br>"
-                f"Credentials valid but list permission denied.<br><br>"
-                f"Error: {str(e)}",
-                title="S3 Health Check"
-            )
+            error_str = str(e)
+            if "NoSuchBucket" in error_str or "does not exist" in error_str:
+                msg = (f"<b>Stage 1 Failed: Bucket '{s3.BUCKET}' not found.</b><br><br>"
+                       f"Please check your Bucket Name setting.<br><br>Error: {error_str}")
+            elif "AccessDenied" in error_str or "403" in error_str:
+                msg = (f"<b>Stage 1 Failed: Access Denied to bucket '{s3.BUCKET}'.</b><br><br>"
+                       f"Credentials are wrong or do not have List permission.<br><br>Error: {error_str}")
+            else:
+                msg = (f"<b>Stage 1 Failed: Cannot reach S3 endpoint.</b><br><br>"
+                       f"Check your Endpoint URL, Region, and credentials.<br><br>Error: {error_str}")
+            frappe.throw(msg, title="S3 Health Check")
 
         # ── Stage 3: upload via presigned PUT + requests library ─────────────
         # requests sets Content-Length automatically from the body bytes —
