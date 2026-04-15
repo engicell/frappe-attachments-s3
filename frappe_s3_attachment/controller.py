@@ -18,7 +18,6 @@ import magic
 
 
 class S3Operations(object):
-
     def __init__(self):
         """
         Initialise the S3 client from the 'S3 File Attachment' doctype settings.
@@ -26,8 +25,8 @@ class S3Operations(object):
         Storage, MinIO, etc.
         """
         self.s3_settings_doc = frappe.get_doc(
-            'S3 File Attachment',
-            'S3 File Attachment',
+            "S3 File Attachment",
+            "S3 File Attachment",
         )
 
         self.BUCKET = self.s3_settings_doc.bucket_name
@@ -43,17 +42,12 @@ class S3Operations(object):
         # force_path_style is required for Oracle Object Storage, MinIO, and
         # providers that don't support virtual-hosted-style bucket addressing.
         addressing_style = (
-            'path'
-            if self.s3_settings_doc.get("force_path_style")
-            else 'auto'
+            "path" if self.s3_settings_doc.get("force_path_style") else "auto"
         )
 
         s3_config = Config(
-            signature_version='s3v4',
-            s3={
-                'addressing_style': addressing_style,
-                'payload_signing_enabled': False
-            },
+            signature_version="s3v4",
+            s3={"addressing_style": addressing_style, "payload_signing_enabled": False},
         )
 
         # Retrieve password properly for password type fields
@@ -65,12 +59,9 @@ class S3Operations(object):
         # Normalise endpoint_url: treat empty string as None so boto3 uses AWS
         endpoint_url = self.s3_settings_doc.endpoint_url or None
 
-        if (
-            self.s3_settings_doc.aws_key and
-            aws_secret
-        ):
+        if self.s3_settings_doc.aws_key and aws_secret:
             self.S3_CLIENT = boto3.client(
-                's3',
+                "s3",
                 aws_access_key_id=self.s3_settings_doc.aws_key,
                 aws_secret_access_key=aws_secret,
                 region_name=self.s3_settings_doc.region_name or None,
@@ -80,7 +71,7 @@ class S3Operations(object):
             )
         else:
             self.S3_CLIENT = boto3.client(
-                's3',
+                "s3",
                 region_name=self.s3_settings_doc.region_name or None,
                 endpoint_url=endpoint_url,
                 config=s3_config,
@@ -95,8 +86,8 @@ class S3Operations(object):
         """
         Strips file characters which don't match the regex.
         """
-        regex = re.compile('[^0-9a-zA-Z._-]')
-        file_name = regex.sub('', file_name)
+        regex = re.compile("[^0-9a-zA-Z._-]")
+        file_name = regex.sub("", file_name)
         return file_name
 
     def key_generator(self, file_name, parent_doctype, parent_name):
@@ -109,23 +100,27 @@ class S3Operations(object):
                 k = frappe.get_attr(hook_cmd[0])(
                     file_name=file_name,
                     parent_doctype=parent_doctype,
-                    parent_name=parent_name
+                    parent_name=parent_name,
                 )
                 if k:
-                    return k.rstrip('/').lstrip('/')
+                    return k.rstrip("/").lstrip("/")
             except Exception:
                 pass
 
-        file_name = file_name.replace(' ', '_')
+        file_name = file_name.replace(" ", "_")
         file_name = self.strip_special_chars(file_name)
-        key = ''.join(
-            random.choice(
-                string.ascii_uppercase + string.digits) for _ in range(8)
+        key = "".join(
+            random.choice(string.ascii_uppercase + string.digits) for _ in range(8)
         )
 
+        if parent_doctype is None:
+            parent_doctype = "File"
+
         if self.folder_name:
-            folder_stripped = self.folder_name.strip('/')
-            final_key = folder_stripped + "/" + parent_doctype + "/" + key + "_" + file_name
+            folder_stripped = self.folder_name.strip("/")
+            final_key = (
+                folder_stripped + "/" + parent_doctype + "/" + key + "_" + file_name
+            )
         else:
             final_key = parent_doctype + "/" + key + "_" + file_name
         return final_key
@@ -143,67 +138,80 @@ class S3Operations(object):
         """
         public_endpoint = self.s3_settings_doc.get("public_endpoint_url")
         if public_endpoint:
-            return '{}/{}'.format(public_endpoint.rstrip('/'), key)
+            return "{}/{}".format(public_endpoint.rstrip("/"), key)
 
         endpoint_url = self.s3_settings_doc.endpoint_url or None
-        region = self.s3_settings_doc.region_name or 'us-east-1'
+        region = self.s3_settings_doc.region_name or "us-east-1"
         force_path = bool(self.s3_settings_doc.get("force_path_style"))
 
         if endpoint_url:
             if force_path:
-                return '{}/{}/{}'.format(endpoint_url.rstrip('/'), self.BUCKET, key)
+                return "{}/{}/{}".format(endpoint_url.rstrip("/"), self.BUCKET, key)
             else:
                 from urllib.parse import urlparse
+
                 parsed = urlparse(endpoint_url)
-                return '{}://{}.{}/{}'.format(parsed.scheme, self.BUCKET, parsed.netloc, key)
+                return "{}://{}.{}/{}".format(
+                    parsed.scheme, self.BUCKET, parsed.netloc, key
+                )
 
         # Native AWS
         if force_path:
-            return 'https://s3.{}.amazonaws.com/{}/{}'.format(region, self.BUCKET, key)
+            return "https://s3.{}.amazonaws.com/{}/{}".format(region, self.BUCKET, key)
         else:
-            return 'https://{}.s3.{}.amazonaws.com/{}'.format(self.BUCKET, region, key)
+            return "https://{}.s3.{}.amazonaws.com/{}".format(self.BUCKET, region, key)
 
     # ------------------------------------------------------------------
     # Core S3 operations
     # ------------------------------------------------------------------
 
     def upload_files_to_s3_with_key(
-            self, file_path, file_name, is_private, parent_doctype, parent_name
+        self, file_path, file_name, is_private, parent_doctype, parent_name
     ):
         """
-        Uploads a new file to S3.
-        Strips the file extension to set the content_type in metadata.
+        Uploads a new file to S3 using presigned URL (fixes Oracle Cloud compatibility).
         """
+        import requests as req_lib
+
         mime_type = magic.from_file(file_path, mime=True)
         key = self.key_generator(file_name, parent_doctype, parent_name)
         content_type = mime_type
+
         try:
-            if is_private:
-                self.S3_CLIENT.upload_file(
-                    file_path, self.BUCKET, key,
-                    ExtraArgs={
-                        "ContentType": content_type,
-                        "Metadata": {
-                            "ContentType": content_type,
-                            "file_name": file_name
-                        }
-                    }
+            with open(file_path, "rb") as f:
+                file_content = f.read()
+
+            extra_args = {"ContentType": content_type}
+            if not is_private:
+                extra_args["ACL"] = "public-read"
+
+            presigned_url = self.S3_CLIENT.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self.BUCKET, "Key": key, **extra_args},
+                ExpiresIn=300,
+            )
+
+            response = req_lib.put(
+                presigned_url,
+                data=file_content,
+                headers={"Content-Type": content_type},
+                verify=self.verify_ssl,
+                timeout=60,
+            )
+
+            if response.status_code not in (200, 201, 204):
+                frappe.log_error(
+                    message=f"Upload failed with status {response.status_code}: {response.text}",
+                    title="S3 File Attachment Upload Failed",
                 )
-            else:
-                self.S3_CLIENT.upload_file(
-                    file_path, self.BUCKET, key,
-                    ExtraArgs={
-                        "ContentType": content_type,
-                        "ACL": 'public-read',
-                        "Metadata": {
-                            "ContentType": content_type,
-                        }
-                    }
-                )
+                return None
 
         except Exception as e:
             import traceback
-            frappe.log_error(message=traceback.format_exc(), title="S3 File Attachment Upload Failed")
+
+            frappe.log_error(
+                message=traceback.format_exc(), title="S3 File Attachment Upload Failed"
+            )
             return None
         return key
 
@@ -212,12 +220,15 @@ class S3Operations(object):
         if self.s3_settings_doc.delete_file_from_cloud:
             try:
                 self.S3_CLIENT.delete_object(
-                    Bucket=self.s3_settings_doc.bucket_name,
-                    Key=key
+                    Bucket=self.s3_settings_doc.bucket_name, Key=key
                 )
             except Exception as e:
                 import traceback
-                frappe.log_error(message=traceback.format_exc(), title="S3 File Attachment Delete Failed")
+
+                frappe.log_error(
+                    message=traceback.format_exc(),
+                    title="S3 File Attachment Delete Failed",
+                )
 
     def read_file_from_s3(self, key):
         """
@@ -235,14 +246,14 @@ class S3Operations(object):
         expiry = self.s3_settings_doc.signed_url_expiry_time or 120
 
         params = {
-            'Bucket': self.BUCKET,
-            'Key': key,
+            "Bucket": self.BUCKET,
+            "Key": key,
         }
         if file_name:
-            params['ResponseContentDisposition'] = 'filename={}'.format(file_name)
+            params["ResponseContentDisposition"] = "filename={}".format(file_name)
 
         url = self.S3_CLIENT.generate_presigned_url(
-            'get_object',
+            "get_object",
             Params=params,
             ExpiresIn=expiry,
         )
@@ -253,6 +264,7 @@ class S3Operations(object):
 # ------------------------------------------------------------------
 # Frappe hooks / whitelisted methods
 # ------------------------------------------------------------------
+
 
 @frappe.whitelist()
 def file_upload_to_s3(doc, method):
@@ -266,26 +278,27 @@ def file_upload_to_s3(doc, method):
         s3_upload = S3Operations()
     except Exception as e:
         import traceback
-        frappe.log_error(message=traceback.format_exc(), title="S3 Operations Init Failed")
+
+        frappe.log_error(
+            message=traceback.format_exc(), title="S3 Operations Init Failed"
+        )
         return
 
     path = doc.file_url
     site_path = frappe.utils.get_site_path()
-    parent_doctype = doc.attached_to_doctype or 'File'
+    parent_doctype = doc.attached_to_doctype or "File"
     parent_name = doc.attached_to_name
-    ignore_s3_upload_for_doctype = (
-        frappe.local.conf.get('ignore_s3_upload_for_doctype') or ['Data Import']
-    )
+    ignore_s3_upload_for_doctype = frappe.local.conf.get(
+        "ignore_s3_upload_for_doctype"
+    ) or ["Data Import"]
     if parent_doctype not in ignore_s3_upload_for_doctype:
         if not doc.is_private:
-            file_path = site_path + '/public' + path
+            file_path = site_path + "/public" + path
         else:
             file_path = site_path + path
 
         key = s3_upload.upload_files_to_s3_with_key(
-            file_path, doc.file_name,
-            doc.is_private, parent_doctype,
-            parent_name
+            file_path, doc.file_name, doc.is_private, parent_doctype, parent_name
         )
         if not key:
             return
@@ -302,16 +315,17 @@ def file_upload_to_s3(doc, method):
         frappe.db.sql(
             """UPDATE `tabFile` SET file_url=%s, folder=%s,
             old_parent=%s, content_hash=%s WHERE name=%s""",
-            (file_url, 'Home/Attachments', 'Home/Attachments', key, doc.name)
+            (file_url, "Home/Attachments", "Home/Attachments", key, doc.name),
         )
 
         doc.file_url = file_url
 
-        if parent_doctype and frappe.get_meta(parent_doctype).get('image_field'):
+        if parent_doctype and frappe.get_meta(parent_doctype).get("image_field"):
             frappe.db.set_value(
-                parent_doctype, parent_name,
-                frappe.get_meta(parent_doctype).get('image_field'),
-                file_url
+                parent_doctype,
+                parent_name,
+                frappe.get_meta(parent_doctype).get("image_field"),
+                file_url,
             )
 
         frappe.db.commit()
@@ -328,7 +342,7 @@ def generate_file(key=None, file_name=None):
         frappe.local.response["type"] = "redirect"
         frappe.local.response["location"] = signed_url
     else:
-        frappe.local.response['body'] = "Key not found."
+        frappe.local.response["body"] = "Key not found."
     return
 
 
@@ -336,16 +350,16 @@ def upload_existing_files_s3(name):
     """
     Function to upload all existing files.
     """
-    file_doc_name = frappe.db.get_value('File', {'name': name})
+    file_doc_name = frappe.db.get_value("File", {"name": name})
     if file_doc_name:
-        doc = frappe.get_doc('File', name)
+        doc = frappe.get_doc("File", name)
         s3_upload = S3Operations()
         path = doc.file_url
         site_path = frappe.utils.get_site_path()
         parent_doctype = doc.attached_to_doctype
         parent_name = doc.attached_to_name
         if not doc.is_private:
-            file_path = site_path + '/public' + path
+            file_path = site_path + "/public" + path
         else:
             file_path = site_path + path
 
@@ -354,9 +368,7 @@ def upload_existing_files_s3(name):
             return
 
         key = s3_upload.upload_files_to_s3_with_key(
-            file_path, doc.file_name,
-            doc.is_private, parent_doctype,
-            parent_name
+            file_path, doc.file_name, doc.is_private, parent_doctype, parent_name
         )
         if not key:
             return
@@ -383,8 +395,8 @@ def s3_file_regex_match(file_url):
     Match the public file regex match.
     """
     return re.match(
-        r'^(https?:|/api/method/frappe_s3_attachment.controller.generate_file)',
-        file_url
+        r"^(https?:|/api/method/frappe_s3_attachment.controller.generate_file)",
+        file_url,
     )
 
 
@@ -400,9 +412,13 @@ def migrate_existing_files():
     frappe.enqueue(
         "frappe_s3_attachment.controller.run_migration_in_background",
         queue="long",
-        timeout=3600
+        timeout=3600,
     )
-    frappe.msgprint(frappe._("File migration started in the background. You can safely close this window."))
+    frappe.msgprint(
+        frappe._(
+            "File migration started in the background. You can safely close this window."
+        )
+    )
     return True
 
 
@@ -410,27 +426,27 @@ def run_migration_in_background():
     """
     Background job to process all local files to S3.
     """
-    files_list = frappe.get_all(
-        'File',
-        fields=['name', 'file_url']
-    )
+    files_list = frappe.get_all("File", fields=["name", "file_url"])
     for file in files_list:
-        if file.get('file_url'):
-            if not s3_file_regex_match(file.get('file_url')):
-                upload_existing_files_s3(file.get('name'))
+        if file.get("file_url"):
+            if not s3_file_regex_match(file.get("file_url")):
+                upload_existing_files_s3(file.get("name"))
 
 
 def delete_from_cloud(doc, method):
     """Delete file from s3"""
     if not frappe.db.get_single_value("S3 File Attachment", "enabled"):
         return
-        
+
     try:
         s3 = S3Operations()
         s3.delete_from_s3(doc.content_hash)
     except Exception as e:
         import traceback
-        frappe.log_error(message=traceback.format_exc(), title="S3 Delete Operations Failed")
+
+        frappe.log_error(
+            message=traceback.format_exc(), title="S3 Delete Operations Failed"
+        )
 
 
 @frappe.whitelist()
@@ -458,14 +474,20 @@ def test_s3_connection():
         except Exception as e:
             error_str = str(e)
             if "NoSuchBucket" in error_str or "does not exist" in error_str:
-                msg = (f"<b>Stage 1 Failed: Bucket '{s3.BUCKET}' not found.</b><br><br>"
-                       f"Please check your Bucket Name setting.<br><br>Error: {error_str}")
+                msg = (
+                    f"<b>Stage 1 Failed: Bucket '{s3.BUCKET}' not found.</b><br><br>"
+                    f"Please check your Bucket Name setting.<br><br>Error: {error_str}"
+                )
             elif "AccessDenied" in error_str or "403" in error_str:
-                msg = (f"<b>Stage 1 Failed: Access Denied to bucket '{s3.BUCKET}'.</b><br><br>"
-                       f"Credentials are wrong or do not have List permission.<br><br>Error: {error_str}")
+                msg = (
+                    f"<b>Stage 1 Failed: Access Denied to bucket '{s3.BUCKET}'.</b><br><br>"
+                    f"Credentials are wrong or do not have List permission.<br><br>Error: {error_str}"
+                )
             else:
-                msg = (f"<b>Stage 1 Failed: Cannot reach S3 endpoint.</b><br><br>"
-                       f"Check your Endpoint URL, Region, and credentials.<br><br>Error: {error_str}")
+                msg = (
+                    f"<b>Stage 1 Failed: Cannot reach S3 endpoint.</b><br><br>"
+                    f"Check your Endpoint URL, Region, and credentials.<br><br>Error: {error_str}"
+                )
             frappe.throw(msg, title="S3 Health Check")
 
         # ── Stage 3: upload via presigned PUT + requests library ─────────────
@@ -475,7 +497,7 @@ def test_s3_connection():
 
         test_key = "s3_connection_test_" + frappe.generate_hash()[:8] + ".txt"
         if s3.folder_name:
-            test_key = s3.folder_name.strip('/') + "/" + test_key
+            test_key = s3.folder_name.strip("/") + "/" + test_key
 
         body_bytes = b"S3 Connection Test - ERPNext S3 Attachment"
         upload_ok = False
@@ -546,5 +568,9 @@ def test_s3_connection():
         raise
     except Exception as e:
         import traceback
+
         frappe.log_error(message=traceback.format_exc(), title="S3 Test Failed")
-        frappe.throw(f"<b>Connection to S3 Failed!</b><br><br>Error: {str(e)}", title="S3 Health Check")
+        frappe.throw(
+            f"<b>Connection to S3 Failed!</b><br><br>Error: {str(e)}",
+            title="S3 Health Check",
+        )
