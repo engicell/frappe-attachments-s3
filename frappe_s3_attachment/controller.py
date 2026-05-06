@@ -182,7 +182,9 @@ class S3Operations(object):
                 file_content = f.read()
 
             extra_args = {"ContentType": content_type}
-            if not is_private:
+            # Skip ACL when configured (e.g. Cloudflare R2 doesn't support
+            # x-amz-acl and will fail SigV4 validation if it's signed).
+            if not is_private and not self.s3_settings_doc.get("disable_acl"):
                 extra_args["ACL"] = "public-read"
 
             presigned_url = self.S3_CLIENT.generate_presigned_url(

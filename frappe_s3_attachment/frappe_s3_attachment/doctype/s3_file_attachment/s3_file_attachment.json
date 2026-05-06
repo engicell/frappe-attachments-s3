@@ -98,6 +98,12 @@
    "description": "Disable SSL/TLS certificate verification. Use only with self-signed certificates in trusted, internal networks. NOT recommended for production."
   },
   {
+   "fieldname": "disable_acl",
+   "fieldtype": "Check",
+   "label": "Disable Object ACL",
+   "description": "Skip the per-object x-amz-acl header on uploads. REQUIRED for Cloudflare R2 (and any S3-compatible provider that does not support ACLs). When enabled, public access must be configured at the bucket level (e.g. R2 custom domain or pub-xxx.r2.dev URL set in CDN / Public URL above)."
+  },
+  {
    "fieldname": "migrate_existing_files",
    "fieldtype": "Button",
    "label": "Migrate Existing Files"
@@ -119,7 +125,7 @@
  "issingle": 1,
  "istable": 0,
  "max_attachments": 0,
- "modified": "2026-04-14 12:00:00.000000",
+ "modified": "2026-05-06 21:30:00.000000",
  "modified_by": "Administrator",
  "module": "Frappe S3 Attachment",
  "name": "S3 File Attachment",
