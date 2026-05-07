@@ -13,9 +13,6 @@ from frappe.model.document import Document
 class S3FileAttachment(Document):
 	def validate(self):
 		self.endpoint_url = _normalize_url(self.endpoint_url, "Endpoint URL")
-		self.public_endpoint_url = _normalize_url(
-			self.public_endpoint_url, "CDN / Public URL"
-		)
 
 
 def _normalize_url(value, field_label):

@@ -62,12 +62,6 @@
    "description": "S3-API endpoint used for all credentialed operations (uploads, signed reads, deletes). Must include scheme — a bare hostname is auto-prefixed with https:// on save. Examples: Cloudflare R2 — https://&lt;account_id&gt;.r2.cloudflarestorage.com | Oracle Object Storage — https://&lt;namespace&gt;.compat.objectstorage.&lt;region&gt;.oraclecloud.com | MinIO — http://localhost:9000 | Leave blank for native AWS S3."
   },
   {
-   "fieldname": "public_endpoint_url",
-   "fieldtype": "Data",
-   "label": "CDN / Public URL (Optional, Performance Only)",
-   "description": "TRULY OPTIONAL — leave blank for a universal setup that works on every S3-compatible provider. By default, public files are served via a Frappe-side signed-URL redirect (1 extra hop, no CDN caching). Set this field only if you want public files served directly from a CDN/public hostname for browser-cacheable delivery. Examples: https://cdn.example.com, https://pub-xxx.r2.dev. Must point at the same bucket as Endpoint URL. Must include scheme; a bare hostname is auto-prefixed with https:// on save."
-  },
-  {
    "fieldname": "folder_name",
    "fieldtype": "Data",
    "label": "Folder Name",
@@ -107,18 +101,12 @@
    "fieldname": "disable_acl",
    "fieldtype": "Check",
    "label": "Disable Object ACL",
-   "description": "Skip the per-object x-amz-acl header on uploads. REQUIRED for Cloudflare R2 (and any S3-compatible provider that does not support ACLs). When enabled, public access must be configured at the bucket level (e.g. R2 custom domain or pub-xxx.r2.dev URL set in CDN / Public URL above)."
+   "description": "Skip the per-object x-amz-acl header on uploads. REQUIRED for Cloudflare R2 (and any S3-compatible provider that does not support ACLs)."
   },
   {
    "fieldname": "migrate_existing_files",
    "fieldtype": "Button",
    "label": "Migrate Existing Files"
-  },
-  {
-   "fieldname": "rewrite_file_urls",
-   "fieldtype": "Button",
-   "label": "Rewrite Stored File URLs",
-   "description": "Bulk-rewrite the file_url of public File rows when you've changed the public hostname after files were already uploaded. Prompts for the old prefix and previews the change before writing."
   },
   {
    "fieldname": "test_s3_connection",

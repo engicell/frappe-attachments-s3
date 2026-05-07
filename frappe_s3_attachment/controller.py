@@ -6,7 +6,6 @@ import random
 import re
 import string
 import urllib3
-from urllib.parse import quote, urlparse
 
 import boto3
 
@@ -162,57 +161,6 @@ class S3Operations(object):
         sanitised = re.sub(r"[^0-9A-Za-z._-]+", "_", abbr).strip("_")
         return sanitised or "_shared"
 
-    def get_public_url(self, key):
-        """
-        Build the public (non-signed) URL for a key.
-
-        - Custom CDN/Public domain: ``{cdn}/{key}``
-        - Custom endpoint (R2, Oracle, MinIO, …): always path-style
-          ``{endpoint}/{bucket}/{key}``.
-        - Standard AWS without a custom endpoint: respects force_path_style.
-          Path-style  → ``https://s3.{region}.amazonaws.com/{bucket}/{key}``
-          Virtual     → ``https://{bucket}.s3.{region}.amazonaws.com/{key}``
-
-        The ``key`` is URL-encoded so spaces / parentheses / unicode in the
-        object name don't produce technically-invalid URLs that some browsers
-        or CDNs reject. Slashes are preserved so the path structure is intact.
-        """
-        encoded_key = quote(key, safe="/")
-
-        public_endpoint = self.s3_settings_doc.get("public_endpoint_url") or ""
-        public_endpoint = public_endpoint.strip().rstrip("/")
-        if public_endpoint:
-            # Safety net for setups that bypassed the doctype validate() —
-            # always emit an absolute URL, never a relative one.
-            if not public_endpoint.lower().startswith(("http://", "https://")):
-                public_endpoint = "https://" + public_endpoint
-            return "{}/{}".format(public_endpoint, encoded_key)
-
-        endpoint_url = self.s3_settings_doc.endpoint_url or None
-        region = self.s3_settings_doc.region_name or "us-east-1"
-        force_path = bool(self.s3_settings_doc.get("force_path_style"))
-
-        if endpoint_url:
-            if force_path:
-                return "{}/{}/{}".format(
-                    endpoint_url.rstrip("/"), self.BUCKET, encoded_key
-                )
-            else:
-                parsed = urlparse(endpoint_url)
-                return "{}://{}.{}/{}".format(
-                    parsed.scheme, self.BUCKET, parsed.netloc, encoded_key
-                )
-
-        # Native AWS
-        if force_path:
-            return "https://s3.{}.amazonaws.com/{}/{}".format(
-                region, self.BUCKET, encoded_key
-            )
-        else:
-            return "https://{}.s3.{}.amazonaws.com/{}".format(
-                self.BUCKET, region, encoded_key
-            )
-
     # ------------------------------------------------------------------
     # Core S3 operations
     # ------------------------------------------------------------------
@@ -357,23 +305,14 @@ def file_upload_to_s3(doc, method):
         if not key:
             return
 
-        # Decide where the browser will fetch this file:
-        #  - Private files always go through the redirect endpoint (signed
-        #    URL with a permission check).
-        #  - Public files default to the redirect endpoint too — that path
-        #    works on every S3-compatible provider, including R2 and Oracle
-        #    whose S3-API hosts refuse anonymous reads. Direct CDN URLs are
-        #    opt-in: only used when `public_endpoint_url` is configured.
-        public_endpoint = (
-            s3_upload.s3_settings_doc.get("public_endpoint_url") or ""
-        ).strip()
-        if doc.is_private or not public_endpoint:
-            method_path = "frappe_s3_attachment.controller.generate_file"
-            file_url = "/api/method/{0}?key={1}&file_name={2}".format(
-                method_path, key, doc.file_name
-            )
-        else:
-            file_url = s3_upload.get_public_url(key)
+        # Universal redirect path: every file (public or private) is served
+        # via a Frappe-side signed-URL redirect. Permission check happens in
+        # generate_file before the redirect is issued. Works identically on
+        # AWS, R2, Oracle, MinIO — no provider-specific URL composition.
+        method_path = "frappe_s3_attachment.controller.generate_file"
+        file_url = "/api/method/{0}?key={1}&file_name={2}".format(
+            method_path, key, doc.file_name
+        )
 
         os.remove(file_path)
         frappe.db.sql(
@@ -457,19 +396,11 @@ def upload_existing_files_s3(name):
         if not key:
             return
 
-        # Mirror file_upload_to_s3: redirect-by-default for both private and
-        # public files; only emit a direct CDN URL when public_endpoint_url
-        # is set.
-        public_endpoint = (
-            s3_upload.s3_settings_doc.get("public_endpoint_url") or ""
-        ).strip()
-        if doc.is_private or not public_endpoint:
-            method_path = "frappe_s3_attachment.controller.generate_file"
-            file_url = "/api/method/{0}?key={1}&file_name={2}".format(
-                method_path, key, doc.file_name or ""
-            )
-        else:
-            file_url = s3_upload.get_public_url(key)
+        # Universal redirect path — see file_upload_to_s3 for rationale.
+        method_path = "frappe_s3_attachment.controller.generate_file"
+        file_url = "/api/method/{0}?key={1}&file_name={2}".format(
+            method_path, key, doc.file_name or ""
+        )
 
         # Remove file from local.
         os.remove(file_path)
@@ -557,20 +488,17 @@ def test_s3_connection():
                                  every provider including Oracle OCI)
       3. Upload (PUT)         — presigned PUT via requests (bypasses boto3
                                  chunked-transfer issues)
-      4. Private read flow    — presigned GET; verify body matches what we
-                                 wrote (this is the path used by every
-                                 `is_private=1` file in the system)
-      5. Public read flow     — anonymous GET against `public_endpoint_url`
-                                 if set; SKIP with a clear warning if not.
-                                 Public files in the system will be
-                                 unreachable to browsers without this.
-      6. Delete (DELETE)      — clean up the test object and verify it is
+      4. Read flow            — presigned GET; verify body matches what we
+                                 wrote. This is the path used by every file
+                                 (public or private) in the system, since
+                                 the universal redirect always issues a
+                                 fresh signed URL.
+      5. Delete (DELETE)      — clean up the test object and verify it is
                                  actually gone via head_object 404.
 
     A failure short-circuits the run for any stage that would invalidate
     later stages (no point testing reads if the upload didn't happen).
-    Stages that are non-fatal (missing public host, ACL config advisory)
-    surface as WARN, not FAIL.
+    Non-fatal advisories (e.g. ACL config) surface as WARN, not FAIL.
 
     Returns:
         dict with keys: title, indicator (green|orange|red), message (HTML).
@@ -634,7 +562,6 @@ def test_s3_connection():
 
     settings = s3.s3_settings_doc
     endpoint = (settings.endpoint_url or "").rstrip("/")
-    public_endpoint = (settings.get("public_endpoint_url") or "").rstrip("/")
 
     sanity_lines = []
     if not settings.bucket_name:
@@ -716,7 +643,7 @@ def test_s3_connection():
         add("Upload (PUT)", FAIL, frappe.utils.escape_html(str(e))[:400])
         return render()
 
-    # ── Stage 4: Private read flow (presigned GET) ─────────────────────────
+    # ── Stage 4: Read flow (presigned GET) ─────────────────────────────────
     try:
         signed_get = s3.S3_CLIENT.generate_presigned_url(
             "get_object",
@@ -724,51 +651,19 @@ def test_s3_connection():
             ExpiresIn=120)
         r = req_lib.get(signed_get, verify=s3.verify_ssl, timeout=30)
         if r.status_code == 200 and r.content == body_bytes:
-            add("Private read flow (presigned GET)", PASS,
+            add("Read flow (presigned GET)", PASS,
                 "Signed URL returned the file contents byte-for-byte. "
-                "All <i>is_private=1</i> uploads will work end-to-end.")
+                "Every file in the system (public or private) is served "
+                "via this same path — universal across providers.")
         else:
-            add("Private read flow (presigned GET)", FAIL,
+            add("Read flow (presigned GET)", FAIL,
                 f"HTTP {r.status_code}, got {len(r.content)} bytes "
                 f"(expected {len(body_bytes)})")
     except Exception as e:
-        add("Private read flow (presigned GET)", FAIL,
+        add("Read flow (presigned GET)", FAIL,
             frappe.utils.escape_html(str(e))[:400])
 
-    # ── Stage 5: Public read flow ──────────────────────────────────────────
-    if public_endpoint:
-        public_url = f"{public_endpoint}/{test_key}"
-        try:
-            r = req_lib.get(public_url, verify=s3.verify_ssl, timeout=30,
-                            allow_redirects=True)
-            if r.status_code == 200 and r.content == body_bytes:
-                add("Public read flow (anonymous GET)", PASS,
-                    f'Anonymous GET against <a href="{frappe.utils.escape_html(public_endpoint)}" '
-                    f'target="_blank"><code>{frappe.utils.escape_html(public_endpoint)}</code></a> '
-                    f"returned the file. Public files are reachable in browsers.")
-            else:
-                add("Public read flow (anonymous GET)", FAIL,
-                    f"GET <code>{frappe.utils.escape_html(public_url)}</code> "
-                    f"returned HTTP {r.status_code}. Verify the public host "
-                    f"actually maps to this bucket (R2 custom domain bound? "
-                    f"Public dev URL enabled?).")
-        except Exception as e:
-            add("Public read flow (anonymous GET)", FAIL,
-                frappe.utils.escape_html(str(e))[:400])
-    else:
-        # No public endpoint set — this is the universal default. Public
-        # files are served via the Frappe-side signed-URL redirect, which
-        # works on every S3-compatible provider. Treat as PASS with an
-        # informational note, not WARN.
-        add("Public read flow (Frappe redirect)", PASS,
-            "<b>CDN / Public URL</b> is not set — using the universal "
-            "redirect path. Public files will be served via "
-            "<code>/api/method/frappe_s3_attachment.controller.generate_file</code> "
-            "with a fresh signed URL on each request. Works on every "
-            "S3-compatible provider. Set <b>CDN / Public URL</b> only if "
-            "you want browser-cacheable delivery from a CDN.")
-
-    # ── Stage 6: Delete (cleanup) ──────────────────────────────────────────
+    # ── Stage 5: Delete (cleanup) ──────────────────────────────────────────
     try:
         s3.S3_CLIENT.delete_object(Bucket=s3.BUCKET, Key=test_key)
         # verify it's actually gone
@@ -795,86 +690,16 @@ def test_s3_connection():
 
 
 @frappe.whitelist()
-def rewrite_public_file_urls(old_prefix=None, new_prefix=None, dry_run=1):
-    """
-    Bulk-rewrite ``tabFile.file_url`` rows whose value starts with
-    ``old_prefix`` to start with ``new_prefix`` instead.
-
-    Use case: the public hostname (CDN / Public URL) was changed or set after
-    files were already uploaded. Existing rows still carry the old hostname
-    (or the S3-API hostname, which doesn't serve anonymous reads on R2 /
-    Oracle), so browsers 404 on them. This method updates them in one pass.
-
-    Both prefixes must start with ``http://`` or ``https://`` so private file
-    URLs (which begin with ``/api/method/...``) are never matched.
-
-    :param old_prefix: existing URL prefix to match (required).
-    :param new_prefix: replacement prefix (required).
-    :param dry_run:    when truthy, return the count + a sample without
-                       writing. When falsy, perform the UPDATE.
-    :returns: ``{count, sample, dry_run}``
-    """
-    if not old_prefix or not new_prefix:
-        frappe.throw(frappe._("old_prefix and new_prefix are both required."))
-
-    old_prefix = str(old_prefix).strip().rstrip("/")
-    new_prefix = str(new_prefix).strip().rstrip("/")
-
-    if not old_prefix.lower().startswith(("http://", "https://")):
-        frappe.throw(
-            frappe._("old_prefix must be an absolute URL (http:// or https://).")
-        )
-    if not new_prefix.lower().startswith(("http://", "https://")):
-        frappe.throw(
-            frappe._("new_prefix must be an absolute URL (http:// or https://).")
-        )
-    if old_prefix == new_prefix:
-        return {"count": 0, "sample": [], "dry_run": bool(int(dry_run))}
-
-    frappe.only_for("System Manager")
-
-    like_pattern = old_prefix + "%"
-    rows = frappe.db.sql(
-        """SELECT name, file_url FROM `tabFile` WHERE file_url LIKE %s""",
-        (like_pattern,),
-        as_dict=True,
-    )
-    count = len(rows)
-    sample = [
-        {"name": r["name"], "old": r["file_url"],
-         "new": new_prefix + r["file_url"][len(old_prefix):]}
-        for r in rows[:5]
-    ]
-
-    if int(dry_run):
-        return {"count": count, "sample": sample, "dry_run": True}
-
-    if count:
-        frappe.db.sql(
-            """UPDATE `tabFile`
-               SET file_url = CONCAT(%s, SUBSTRING(file_url, %s))
-               WHERE file_url LIKE %s""",
-            (new_prefix, len(old_prefix) + 1, like_pattern),
-        )
-        frappe.db.commit()
-
-    return {"count": count, "sample": sample, "dry_run": False}
-
-
-@frappe.whitelist()
 def migrate_urls_to_redirect(dry_run=1):
     """
-    One-shot migration: convert direct ``https://...`` File URLs (from older
-    public-file uploads) to the universal redirect form
-    ``/api/method/frappe_s3_attachment.controller.generate_file?key=...&file_name=...``.
+    Convert any direct ``http(s)://...`` File URLs to the universal redirect
+    form ``/api/method/frappe_s3_attachment.controller.generate_file?key=...&file_name=...``.
 
-    Targets only rows whose ``content_hash`` is set, i.e. files that were
-    actually uploaded to S3 by this app. Idempotent: rows that already use
-    the redirect form (or any non-http URL) are skipped by the SQL filter.
-
-    Use this after upgrading to a build where public files default to the
-    redirect endpoint, so legacy direct URLs converge to the same shape and
-    keep working without a configured CDN host.
+    Targets only rows whose ``content_hash`` is set — i.e. files this app
+    actually uploaded. Idempotent: rows already on the redirect form are
+    skipped by the SQL filter. Also wired as a patch so it auto-runs once
+    on ``bench migrate`` after upgrading from a build that emitted direct
+    CDN URLs.
 
     :param dry_run: when truthy, return the count + a sample without
                     writing. When falsy, perform the UPDATE.

@@ -1,0 +1,1 @@
+frappe_s3_attachment.patches.v1_0.converge_legacy_urls_to_redirect
