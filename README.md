@@ -63,6 +63,7 @@ in the fields.
 
 | Field | Description |
 |---|---|
+| **Proxy Files Through Frappe (Branded URLs)** | Stream bytes through Frappe instead of redirecting to the storage provider. Browsers only ever see your Frappe domain. See [Delivery modes](#delivery-modes) for the full tradeoff. |
 | **Force Path Style** | Use `{endpoint}/{bucket}/{key}` URL format instead of virtual-hosted style. Tick this if your provider does not support virtual-hosted-style addressing. |
 | **Ignore SSL Certificate Verification** | Disable TLS verification. Use only with self-signed certs on internal networks. Not for production. |
 | **Disable Object ACL** | Skip the per-object `x-amz-acl` header on uploads. Tick this if your provider or bucket policy rejects ACLs (signed PUTs fail with `SignatureDoesNotMatch` when an ACL is sent and not accepted). |
@@ -100,14 +101,65 @@ check produces specific hints when an upload fails for either reason.
   configured bucket via a presigned PUT, and the local copy is removed.
 - **Read.** Every `file_url` produced by this app has the form
   `/api/method/frappe_s3_attachment.controller.generate_file?key=…&file_name=…`.
-  Frappe receives the request, generates a fresh signed S3 GET URL, and
-  302-redirects the browser to it.
+  Frappe receives the request, checks permission, and either redirects the
+  browser to a fresh signed URL (default) or streams the bytes through
+  itself (proxy mode — see below).
 - **Permissions.** Public files (`is_private=0`) allow Guest access;
   private files require an authenticated session. The check happens in
-  Frappe before the redirect is issued — the bucket itself stays private.
+  Frappe before any byte leaves the server — the bucket stays private on
+  every provider.
 
-This is the universal path: one URL shape, identical on every provider,
-no anonymous bucket reads required.
+One URL shape, identical on every provider, no anonymous bucket reads
+required.
+
+---
+
+## Delivery modes
+
+### Redirect mode (default)
+
+Frappe responds with `302 Found` and a short-lived presigned GET URL on
+the storage provider. The browser follows the redirect; bytes flow direct
+from the storage host to the browser.
+
+```
+GET https://erp.example.com/api/method/...generate_file?key=...
+  → 302 Location: https://<account>.r2.cloudflarestorage.com/...?X-Amz-Signature=...
+GET https://<account>.r2.cloudflarestorage.com/...
+  → 200 file bytes
+```
+
+Pros: lowest CPU and bandwidth on Frappe.
+Cons: the storage hostname is visible in the address bar, network panel,
+referer headers, and clipboard for the duration of the second request.
+
+### Proxy mode (opt-in: tick **Proxy Files Through Frappe** in Advanced Options)
+
+Frappe fetches the bytes from storage server-side and streams them back
+to the browser on the original request. The browser only ever sees the
+Frappe domain.
+
+```
+GET https://erp.example.com/api/method/...generate_file?key=...
+  → 200 file bytes (streamed from S3 → Frappe → browser)
+```
+
+What proxy mode handles for you:
+
+- **Range requests** (`Range: bytes=N-M`) are forwarded to the storage
+  provider. Audio and video seek correctly; large downloads can resume.
+  Frappe responds with `206 Partial Content` when appropriate.
+- **Cache-Control** is set per file visibility — `public, max-age=86400`
+  for `is_private=0` files, `private, no-cache, no-store` for private
+  ones. Public assets can still be browser/CDN-cached; private files
+  never enter shared caches.
+- **Content-Type, ETag, Last-Modified** are passed through from the
+  storage provider so conditional requests (`If-None-Match`,
+  `If-Modified-Since`) keep working.
+
+Trade-off: every byte of every download flows through your Frappe server.
+Plan capacity accordingly before flipping the toggle for sites that serve
+large media.
 
 ---
 

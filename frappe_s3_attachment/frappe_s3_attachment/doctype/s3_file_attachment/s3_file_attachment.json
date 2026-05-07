@@ -86,6 +86,12 @@
    "label": "Advanced Options"
   },
   {
+   "fieldname": "proxy_files",
+   "fieldtype": "Check",
+   "label": "Proxy Files Through Frappe (Branded URLs)",
+   "description": "Stream file contents through Frappe so users only ever see your Frappe domain (e.g. <code>https://erp.example.com/...</code>) — the underlying storage URL is never exposed in the browser.<br><br>When OFF (default): browsers are 302-redirected to a short-lived signed URL on the storage provider. Lower CPU/bandwidth on Frappe; the storage hostname is briefly visible.<br><br>When ON: bytes are streamed through Frappe. Range requests are forwarded for video/audio seek. Public files are cached for 1 day in the browser; private files use <code>Cache-Control: private, no-cache</code>. <b>Trade-off:</b> all file traffic routes through your Frappe server."
+  },
+  {
    "fieldname": "force_path_style",
    "fieldtype": "Check",
    "label": "Force Path Style",

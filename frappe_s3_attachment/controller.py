@@ -342,23 +342,32 @@ def file_upload_to_s3(doc, method):
 @frappe.whitelist(allow_guest=True)
 def generate_file(key=None, file_name=None):
     """
-    Stream a file from S3 via a pre-signed redirect.
+    Resolve a stored S3 key to actual file delivery for the browser.
 
-    Used for both public and private files (public files default to this
-    path so the app works universally on every S3-compatible provider).
+    Two delivery modes, controlled by the ``proxy_files`` setting on
+    S3 File Attachment:
 
-    Guest access is allowed only when the matching ``tabFile`` record is
-    public. Private files require a logged-in session — anonymous callers
-    holding a key cannot retrieve them.
+      * **Redirect mode (default).** Issue a 302 to a short-lived presigned
+        GET URL. Bytes flow direct from the storage provider to the browser;
+        the storage hostname is briefly visible in the address bar / network
+        panel after the redirect.
+
+      * **Proxy mode.** Stream bytes from storage through Frappe to the
+        browser. The user only ever sees the Frappe domain. Range requests
+        are forwarded so audio/video seek works. Public files are cached
+        for 1 day; private files use ``Cache-Control: private, no-cache``.
+
+    Guest access is allowed only when the matching ``tabFile`` row is
+    ``is_private=0``. Private files require an authenticated session —
+    anonymous callers holding a key cannot retrieve them.
     """
     if not key:
         frappe.local.response["body"] = "Key not found."
         return
 
-    # The S3 key is stored in the File record's `content_hash` field.
-    # If a public File row exists for this key, treat the request as public.
-    # Otherwise (private-only match, or no match for legacy/manual rows)
-    # require an authenticated session.
+    # The S3 key is stored on the File row's ``content_hash``. A matching
+    # ``is_private=0`` row authorises Guest access; absent that, require
+    # a logged-in session.
     is_public = bool(
         frappe.db.exists("File", {"content_hash": key, "is_private": 0})
     )
@@ -367,11 +376,97 @@ def generate_file(key=None, file_name=None):
             frappe._("You must be logged in to access this file.")
         )
 
-    s3_upload = S3Operations()
-    signed_url = s3_upload.get_url(key, file_name)
+    s3 = S3Operations()
+
+    if s3.s3_settings_doc.get("proxy_files"):
+        return _stream_through_frappe(s3, key, file_name, is_public)
+
+    # Redirect mode (default).
+    signed_url = s3.get_url(key, file_name)
     frappe.local.response["type"] = "redirect"
     frappe.local.response["location"] = signed_url
     return
+
+
+def _stream_through_frappe(s3, key, file_name, is_public):
+    """
+    Proxy a file from S3 through Frappe so the storage URL is never exposed.
+
+    The browser's ``Range`` header is forwarded so audio/video seek and
+    resumable downloads work. Cache-Control is tuned per file visibility:
+    public files get a 1-day cacheable response, private files are
+    no-cache to prevent leakage via shared caches.
+    """
+    from werkzeug.wrappers import Response
+
+    range_header = frappe.get_request_header("Range")
+    get_args = {"Bucket": s3.BUCKET, "Key": key}
+    if range_header:
+        get_args["Range"] = range_header
+
+    try:
+        s3_response = s3.S3_CLIENT.get_object(**get_args)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
+            raise frappe.DoesNotExistError(frappe._("File not found."))
+        if code in ("InvalidRange", "416"):
+            # Browser asked for a byte range outside the object's size.
+            return Response(status=416, headers={"Accept-Ranges": "bytes"})
+        frappe.log_error(message=frappe.get_traceback(), title="S3 Proxy Fetch Failed")
+        raise
+
+    headers = {"Accept-Ranges": s3_response.get("AcceptRanges") or "bytes"}
+    if s3_response.get("ContentType"):
+        headers["Content-Type"] = s3_response["ContentType"]
+    if s3_response.get("ContentLength") is not None:
+        headers["Content-Length"] = str(s3_response["ContentLength"])
+    if s3_response.get("ETag"):
+        headers["ETag"] = s3_response["ETag"]
+    last_mod = s3_response.get("LastModified")
+    if last_mod:
+        headers["Last-Modified"] = last_mod.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    if s3_response.get("ContentRange"):
+        headers["Content-Range"] = s3_response["ContentRange"]
+
+    # Cache policy: public files are CDN/browser-cacheable for a day;
+    # private files must never enter shared caches.
+    if is_public:
+        headers["Cache-Control"] = "public, max-age=86400"
+    else:
+        headers["Cache-Control"] = "private, no-cache, no-store, must-revalidate"
+        headers["Pragma"] = "no-cache"
+
+    if file_name:
+        # ``inline`` lets browsers render images/PDFs in-page; the filename
+        # hint is what they save as if the user clicks "Download".
+        headers["Content-Disposition"] = 'inline; filename="{}"'.format(
+            file_name.replace('"', "")
+        )
+
+    status = 206 if s3_response.get("ContentRange") else 200
+
+    def _iter_chunks(body, chunk_size=64 * 1024):
+        try:
+            while True:
+                chunk = body.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                body.close()
+            except Exception:
+                pass
+
+    response = Response(
+        _iter_chunks(s3_response["Body"]),
+        status=status,
+        headers=headers,
+        direct_passthrough=True,
+    )
+    frappe.local.response = response
+    return response
 
 
 def upload_existing_files_s3(name):
