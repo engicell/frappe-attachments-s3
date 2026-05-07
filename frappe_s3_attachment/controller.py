@@ -93,7 +93,18 @@ class S3Operations(object):
 
     def key_generator(self, file_name, parent_doctype, parent_name):
         """
-        Generate keys for s3 objects uploaded with file name attached.
+        Generate the S3 object key for a new upload.
+
+        Layout (segments joined by ``/``, empty segments dropped):
+          ``[<folder_name>/][<company_segment>/]<parent_doctype>/<rand>_<file_name>``
+
+        ``<company_segment>`` is included only when ``per_company_folders`` is
+        enabled in S3 File Attachment. It resolves to the parent doc's
+        ``Company.abbr`` (sanitised), or ``_shared`` for cross-company masters
+        (Customer, Item, Letter Head, …) and free-floating uploads.
+
+        Apps may override the whole scheme by registering an
+        ``s3_key_generator`` hook returning the final key.
         """
         hook_cmd = frappe.get_hooks().get("s3_key_generator")
         if hook_cmd:
@@ -106,25 +117,50 @@ class S3Operations(object):
                 if k:
                     return k.rstrip("/").lstrip("/")
             except Exception:
-                pass
+                frappe.log_error(
+                    title="s3_key_generator hook failed",
+                    message=frappe.get_traceback(),
+                )
 
-        file_name = file_name.replace(" ", "_")
-        file_name = self.strip_special_chars(file_name)
-        key = "".join(
+        file_name = self.strip_special_chars(file_name.replace(" ", "_"))
+        rand = "".join(
             random.choice(string.ascii_uppercase + string.digits) for _ in range(8)
         )
+        pdt = parent_doctype or "File"
 
-        if parent_doctype is None:
-            parent_doctype = "File"
+        segments = [
+            (self.folder_name or "").strip("/"),
+            self._company_segment(parent_doctype, parent_name),
+            pdt,
+        ]
+        prefix = "/".join(s for s in segments if s)
+        return "{}/{}_{}".format(prefix, rand, file_name)
 
-        if self.folder_name:
-            folder_stripped = self.folder_name.strip("/")
-            final_key = (
-                folder_stripped + "/" + parent_doctype + "/" + key + "_" + file_name
-            )
-        else:
-            final_key = parent_doctype + "/" + key + "_" + file_name
-        return final_key
+    def _company_segment(self, parent_doctype, parent_name):
+        """
+        Resolve the company prefix for a given parent document.
+
+        Returns "" when per-company folders are disabled (so the key shape
+        matches pre-feature deployments byte-for-byte). Returns ``_shared``
+        when the feature is on but no company can be derived — i.e. the
+        parent doctype has no ``company`` field, or the field is empty.
+        """
+        if not self.s3_settings_doc.get("per_company_folders"):
+            return ""
+        if not parent_doctype or not parent_name:
+            return "_shared"
+        try:
+            meta = frappe.get_meta(parent_doctype)
+        except Exception:
+            return "_shared"
+        if not meta.has_field("company"):
+            return "_shared"
+        company = frappe.db.get_value(parent_doctype, parent_name, "company")
+        if not company:
+            return "_shared"
+        abbr = frappe.db.get_value("Company", company, "abbr") or company
+        sanitised = re.sub(r"[^0-9A-Za-z._-]+", "_", abbr).strip("_")
+        return sanitised or "_shared"
 
     def get_public_url(self, key):
         """

@@ -47,6 +47,7 @@ Open **S3 File Attachment** (single doctype) in your Frappe desk and fill in the
 | **Endpoint URL** | S3-API endpoint for non-AWS providers. Leave blank for native AWS S3. Must include `https://`. |
 | **CDN / Public URL** | **Optional, performance only.** Leave blank for the universal default. Set only if you want public files served directly from a CDN host. |
 | **Folder Name** | Optional prefix prepended to every uploaded object key |
+| **Per-Company Folders** | When ticked, prepend the parent document's `Company.abbr` to the key. Cross-company masters (Customer, Item, Letter Head) and free-floating uploads land under `_shared/`. See [Per-company folders](#per-company-folders) below. |
 | **Signed URL Expiry Time** | Expiry in seconds for pre-signed URLs (default: 300) |
 
 ### Advanced Options
@@ -118,6 +119,42 @@ Disable Object ACL:  ☐
 - `/api/method/frappe_s3_attachment.controller.generate_file?key={key}&file_name={name}` — Frappe-side signed redirect, identical on every provider.
 
 ---
+
+## Per-company folders
+
+Tick **Per-Company Folders** in **S3 File Attachment** to organise uploads by
+company. The S3 key becomes:
+
+```
+[<folder_name>/]<company_abbr>/<parent_doctype>/<rand>_<file_name>
+```
+
+Example with `Folder Name` blank, two ERPNext companies (abbr `EPL` and
+`ENG-US`):
+
+```
+EPL/Sales Invoice/AB12CD34_INV-2026-001.pdf
+EPL/Employee/Z9Y8X7W6_passport.jpg
+ENG-US/Purchase Order/Q1W2E3R4_quote.pdf
+_shared/Customer/M5N6B7V8_logo.png
+_shared/Item/T8R7E6W5_datasheet.pdf
+```
+
+Resolution rules:
+
+- Parent doctype has a `company` field and the value is set → `Company.abbr`
+  (sanitised to `[0-9A-Za-z._-]`).
+- Parent doctype has no `company` field (Customer, Supplier, Item, Address,
+  Contact, Letter Head, …) → `_shared`.
+- Free-floating upload (no parent doc) → `_shared`.
+
+Existing files are **not** relocated — only new uploads use the new layout.
+This is a deliberate choice: copying objects in S3 + updating
+`tabFile.content_hash` is risky and unnecessary, since old paths keep working.
+
+Apps that need a different scheme entirely can register an `s3_key_generator`
+hook in their `hooks.py`; that hook overrides the whole layout (per-company
+flag included).
 
 ## Migrating Existing Files
 

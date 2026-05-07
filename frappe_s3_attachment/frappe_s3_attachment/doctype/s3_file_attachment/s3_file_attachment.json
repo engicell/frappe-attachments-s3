@@ -74,6 +74,12 @@
    "description": "Optional prefix/folder prepended to every uploaded object key."
   },
   {
+   "fieldname": "per_company_folders",
+   "fieldtype": "Check",
+   "label": "Per-Company Folders",
+   "description": "When enabled, prepend a per-company segment (Company.abbr) to every uploaded object key, derived from the parent document's company field. Files attached to docs without a company field (Customer, Item, Letter Head, ad-hoc uploads) go under <code>_shared/</code>. Existing files are not relocated; only new uploads get the new layout."
+  },
+  {
    "fieldname": "signed_url_expiry_time",
    "fieldtype": "Int",
    "label": "Signed URL Expiry Time (seconds)",
