@@ -26,8 +26,8 @@ the same way on every provider.
   Frappe checks permissions, signs a short-lived S3 GET URL, and 302s the
   browser to it. Anonymous (Guest) requests are allowed only when the
   matching `tabFile` row is `is_private=0`.
-- **Identical behavior on every provider.** No "AWS-style direct URL"
-  branch, no R2-vs-Oracle special casing in the request path. One code
+- **Identical behavior on every provider.** No provider-specific URL
+  composition, no per-vendor branching in the request path. One code
   path, one mental model.
 
 ---
@@ -63,9 +63,9 @@ in the fields.
 
 | Field | Description |
 |---|---|
-| **Force Path Style** | Use `{endpoint}/{bucket}/{key}` URL format instead of virtual-hosted style. Required for Oracle Object Storage and MinIO. |
+| **Force Path Style** | Use `{endpoint}/{bucket}/{key}` URL format instead of virtual-hosted style. Tick this if your provider does not support virtual-hosted-style addressing. |
 | **Ignore SSL Certificate Verification** | Disable TLS verification. Use only with self-signed certs on internal networks. Not for production. |
-| **Disable Object ACL** | Skip the per-object `x-amz-acl` header on uploads. Required for Cloudflare R2 (and any provider that does not support ACLs). |
+| **Disable Object ACL** | Skip the per-object `x-amz-acl` header on uploads. Tick this if your provider or bucket policy rejects ACLs (signed PUTs fail with `SignatureDoesNotMatch` when an ACL is sent and not accepted). |
 
 The Endpoint URL is normalised on save: a bare hostname is auto-prefixed
 with `https://`, trailing slashes are stripped, invalid values are
@@ -73,43 +73,24 @@ rejected.
 
 ---
 
-## Per-provider Quick-Start
+## Choosing field values
 
-### AWS S3
+The same set of fields is used on every provider. Two of the Advanced
+Options exist precisely because S3-compatible providers and modern AWS
+bucket policies have diverged on two dimensions: addressing style and
+object ACLs. Pick the right combination based on what your provider
+actually accepts:
 
-```
-Endpoint URL:        (blank)
-Region:              us-east-1
-Force Path Style:    ☐
-Disable Object ACL:  ☐   (☑ if your bucket uses "Bucket owner enforced")
-```
+| Field | Default | Tick when |
+|---|---|---|
+| **Endpoint URL** | (blank → native AWS) | Your provider gives you an S3-API endpoint URL. Paste it as-is. |
+| **Region Name** | (blank) | Your provider requires a region. Some accept any string (e.g. `auto`). |
+| **Force Path Style** | ☐ | Virtual-hosted-style requests fail (`{bucket}.{endpoint}` is not a valid host on your provider). Symptom: TLS / DNS errors on upload. |
+| **Disable Object ACL** | ☐ | Signed PUT uploads fail with `SignatureDoesNotMatch` because the bucket / provider does not accept the `x-amz-acl` header. Modern AWS buckets in "Bucket owner enforced" mode also need this on. |
 
-### Cloudflare R2
-
-```
-Endpoint URL:        https://<account_id>.r2.cloudflarestorage.com
-Region:              auto                  ← or blank
-Force Path Style:    ☐
-Disable Object ACL:  ☑   ← required (R2 rejects x-amz-acl)
-```
-
-### Oracle Object Storage
-
-```
-Endpoint URL:        https://<namespace>.compat.objectstorage.<region>.oraclecloud.com
-Region:              (blank or your OCI region)
-Force Path Style:    ☑   ← required
-Disable Object ACL:  ☑
-```
-
-### MinIO
-
-```
-Endpoint URL:        http://localhost:9000
-Region:              (blank)
-Force Path Style:    ☑   ← required
-Disable Object ACL:  ☐
-```
+If unsure, leave both Advanced Options unticked, click **Test S3
+Connection**, and toggle them based on the failure messages — the health
+check produces specific hints when an upload fails for either reason.
 
 ---
 

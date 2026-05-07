@@ -20,9 +20,8 @@ import magic
 class S3Operations(object):
     def __init__(self):
         """
-        Initialise the S3 client from the 'S3 File Attachment' doctype settings.
-        Supports any S3-compatible provider: AWS S3, Cloudflare R2, Oracle Object
-        Storage, MinIO, etc.
+        Initialise the S3 client from the 'S3 File Attachment' doctype
+        settings. Works with any S3-compatible object storage backend.
         """
         self.s3_settings_doc = frappe.get_doc(
             "S3 File Attachment",
@@ -39,8 +38,8 @@ class S3Operations(object):
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         # --- Addressing style ---
-        # force_path_style is required for Oracle Object Storage, MinIO, and
-        # providers that don't support virtual-hosted-style bucket addressing.
+        # Tick force_path_style if your provider does not support
+        # virtual-hosted-style bucket addressing.
         addressing_style = (
             "path" if self.s3_settings_doc.get("force_path_style") else "auto"
         )
@@ -56,7 +55,8 @@ class S3Operations(object):
             # Fallback to the field itself in case of older un-migrated setups
             aws_secret = self.s3_settings_doc.get("aws_secret")
 
-        # Normalise endpoint_url: treat empty string as None so boto3 uses AWS
+        # Normalise endpoint_url: treat empty string as None so the SDK
+        # falls back to its built-in default endpoint resolution.
         endpoint_url = self.s3_settings_doc.endpoint_url or None
 
         if self.s3_settings_doc.aws_key and aws_secret:
@@ -169,7 +169,9 @@ class S3Operations(object):
         self, file_path, file_name, is_private, parent_doctype, parent_name
     ):
         """
-        Uploads a new file to S3 using presigned URL (fixes Oracle Cloud compatibility).
+        Upload a new file via a short-lived presigned PUT URL. This avoids
+        SDK-specific transfer behaviour (chunked encoding, content-length
+        quirks) that some S3-compatible providers reject.
         """
         import requests as req_lib
 
@@ -182,8 +184,11 @@ class S3Operations(object):
                 file_content = f.read()
 
             extra_args = {"ContentType": content_type}
-            # Skip ACL when configured (e.g. Cloudflare R2 doesn't support
-            # x-amz-acl and will fail SigV4 validation if it's signed).
+            # Skip ACL when the operator has opted out via `disable_acl`.
+            # Some S3-compatible backends and modern bucket policies reject
+            # the x-amz-acl header outright (signed PUTs fail with
+            # SignatureDoesNotMatch), so the toggle is the universal escape
+            # hatch.
             if not is_private and not self.s3_settings_doc.get("disable_acl"):
                 extra_args["ACL"] = "public-read"
 
@@ -307,8 +312,8 @@ def file_upload_to_s3(doc, method):
 
         # Universal redirect path: every file (public or private) is served
         # via a Frappe-side signed-URL redirect. Permission check happens in
-        # generate_file before the redirect is issued. Works identically on
-        # AWS, R2, Oracle, MinIO — no provider-specific URL composition.
+        # generate_file before the redirect is issued. One code path, one
+        # URL shape — identical on every S3-compatible backend.
         method_path = "frappe_s3_attachment.controller.generate_file"
         file_url = "/api/method/{0}?key={1}&file_name={2}".format(
             method_path, key, doc.file_name
@@ -484,8 +489,8 @@ def test_s3_connection():
 
     Stages:
       1. Settings sanity      — fields present + provider-specific advice
-      2. Credentials + LIST   — list_objects_v2 (no Content-Length, works on
-                                 every provider including Oracle OCI)
+      2. Credentials + LIST   — list_objects_v2 (no Content-Length header,
+                                 works across S3-compatible backends)
       3. Upload (PUT)         — presigned PUT via requests (bypasses boto3
                                  chunked-transfer issues)
       4. Read flow            — presigned GET; verify body matches what we
@@ -570,19 +575,13 @@ def test_s3_connection():
         sanity_lines.append("Access Key ID is empty.")
     if not settings.get_password("aws_secret", raise_exception=False):
         sanity_lines.append("Secret Access Key is empty.")
-    # provider-specific advisories
-    if "r2.cloudflarestorage" in endpoint and not settings.get("disable_acl"):
-        sanity_lines.append(
-            "Endpoint looks like Cloudflare R2 but <b>Disable Object ACL</b> "
-            "is OFF. R2 will reject signed uploads with x-amz-acl. "
-            "Tick the checkbox.")
     if sanity_lines:
         critical = any("empty" in l for l in sanity_lines)
         add("Settings", FAIL if critical else WARN, "<br>".join(sanity_lines))
         if critical:
             return render()
     else:
-        add("Settings", PASS, f"Endpoint: <code>{frappe.utils.escape_html(endpoint or 'native AWS')}</code>")
+        add("Settings", PASS, f"Endpoint: <code>{frappe.utils.escape_html(endpoint or '(SDK default)')}</code>")
 
     # ── Stage 2: credentials + LIST ────────────────────────────────────────
     try:
@@ -612,9 +611,10 @@ def test_s3_connection():
 
     try:
         put_args = {"Bucket": s3.BUCKET, "Key": test_key, "ContentType": "text/plain"}
-        # Mirror the upload path's ACL behaviour: only sign with public-read
-        # if both not-private semantics AND user has not opted out via
-        # `disable_acl` (R2/Oracle compat).
+        # Mirror the upload path's ACL behaviour: emit x-amz-acl only when
+        # the operator has not opted out. Some S3-compatible backends and
+        # modern bucket-owner-enforced policies reject ACLs entirely; the
+        # `disable_acl` toggle is the universal escape hatch.
         will_send_acl = not settings.get("disable_acl")
         if will_send_acl:
             put_args["ACL"] = "public-read"
@@ -632,8 +632,8 @@ def test_s3_connection():
         else:
             extra = ""
             if will_send_acl and "SignatureDoesNotMatch" in resp.text:
-                extra = ("<br><b>Likely cause:</b> provider does not support "
-                         "x-amz-acl (e.g. Cloudflare R2). Tick "
+                extra = ("<br><b>Likely cause:</b> the bucket / provider does "
+                         "not accept the <code>x-amz-acl</code> header. Tick "
                          "<b>Disable Object ACL</b> and retest.")
             add("Upload (PUT)", FAIL,
                 f"HTTP {resp.status_code}<br>"

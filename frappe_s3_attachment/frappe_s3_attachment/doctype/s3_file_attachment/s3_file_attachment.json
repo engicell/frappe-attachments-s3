@@ -53,13 +53,13 @@
    "fieldname": "region_name",
    "fieldtype": "Data",
    "label": "Region Name",
-   "description": "AWS region (e.g. us-east-1) or provider-specific region. Leave blank if not required."
+   "description": "Region identifier expected by your provider (e.g. us-east-1, eu-west-1, auto). Leave blank if your provider does not require it."
   },
   {
    "fieldname": "endpoint_url",
    "fieldtype": "Data",
    "label": "Endpoint URL",
-   "description": "S3-API endpoint used for all credentialed operations (uploads, signed reads, deletes). Must include scheme — a bare hostname is auto-prefixed with https:// on save. Examples: Cloudflare R2 — https://&lt;account_id&gt;.r2.cloudflarestorage.com | Oracle Object Storage — https://&lt;namespace&gt;.compat.objectstorage.&lt;region&gt;.oraclecloud.com | MinIO — http://localhost:9000 | Leave blank for native AWS S3."
+   "description": "S3-API endpoint used for all credentialed operations (uploads, signed reads, deletes). Paste the URL your provider documents for S3-compatible access. Must include scheme; a bare hostname is auto-prefixed with https:// on save. Leave blank to use the SDK's built-in default endpoint."
   },
   {
    "fieldname": "folder_name",
@@ -89,7 +89,7 @@
    "fieldname": "force_path_style",
    "fieldtype": "Check",
    "label": "Force Path Style",
-   "description": "Use path-style S3 URLs ({endpoint}/{bucket}/{key}) instead of virtual-hosted style ({bucket}.{endpoint}/{key}). Required for Oracle Object Storage, MinIO, and some other S3-compatible providers."
+   "description": "Use path-style S3 URLs ({endpoint}/{bucket}/{key}) instead of virtual-hosted style ({bucket}.{endpoint}/{key}). Tick this if your provider does not support virtual-hosted-style addressing."
   },
   {
    "fieldname": "ignore_ssl",
@@ -101,7 +101,7 @@
    "fieldname": "disable_acl",
    "fieldtype": "Check",
    "label": "Disable Object ACL",
-   "description": "Skip the per-object x-amz-acl header on uploads. REQUIRED for Cloudflare R2 (and any S3-compatible provider that does not support ACLs)."
+   "description": "Skip the per-object x-amz-acl header on uploads. Tick this if your provider or bucket policy rejects ACLs (signed PUTs fail with SignatureDoesNotMatch when an ACL is sent and not accepted)."
   },
   {
    "fieldname": "migrate_existing_files",
