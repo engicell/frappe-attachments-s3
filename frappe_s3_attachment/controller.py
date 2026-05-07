@@ -321,10 +321,20 @@ def file_upload_to_s3(doc, method):
         if not key:
             return
 
-        if doc.is_private:
-            method = "frappe_s3_attachment.controller.generate_file"
-            file_url = """/api/method/{0}?key={1}&file_name={2}""".format(
-                method, key, doc.file_name
+        # Decide where the browser will fetch this file:
+        #  - Private files always go through the redirect endpoint (signed
+        #    URL with a permission check).
+        #  - Public files default to the redirect endpoint too — that path
+        #    works on every S3-compatible provider, including R2 and Oracle
+        #    whose S3-API hosts refuse anonymous reads. Direct CDN URLs are
+        #    opt-in: only used when `public_endpoint_url` is configured.
+        public_endpoint = (
+            s3_upload.s3_settings_doc.get("public_endpoint_url") or ""
+        ).strip()
+        if doc.is_private or not public_endpoint:
+            method_path = "frappe_s3_attachment.controller.generate_file"
+            file_url = "/api/method/{0}?key={1}&file_name={2}".format(
+                method_path, key, doc.file_name
             )
         else:
             file_url = s3_upload.get_public_url(key)
@@ -349,18 +359,38 @@ def file_upload_to_s3(doc, method):
         frappe.db.commit()
 
 
-@frappe.whitelist()
+@frappe.whitelist(allow_guest=True)
 def generate_file(key=None, file_name=None):
     """
-    Stream a private file from S3 via a pre-signed redirect.
+    Stream a file from S3 via a pre-signed redirect.
+
+    Used for both public and private files (public files default to this
+    path so the app works universally on every S3-compatible provider).
+
+    Guest access is allowed only when the matching ``tabFile`` record is
+    public. Private files require a logged-in session — anonymous callers
+    holding a key cannot retrieve them.
     """
-    if key:
-        s3_upload = S3Operations()
-        signed_url = s3_upload.get_url(key, file_name)
-        frappe.local.response["type"] = "redirect"
-        frappe.local.response["location"] = signed_url
-    else:
+    if not key:
         frappe.local.response["body"] = "Key not found."
+        return
+
+    # The S3 key is stored in the File record's `content_hash` field.
+    # If a public File row exists for this key, treat the request as public.
+    # Otherwise (private-only match, or no match for legacy/manual rows)
+    # require an authenticated session.
+    is_public = bool(
+        frappe.db.exists("File", {"content_hash": key, "is_private": 0})
+    )
+    if not is_public and frappe.session.user == "Guest":
+        raise frappe.PermissionError(
+            frappe._("You must be logged in to access this file.")
+        )
+
+    s3_upload = S3Operations()
+    signed_url = s3_upload.get_url(key, file_name)
+    frappe.local.response["type"] = "redirect"
+    frappe.local.response["location"] = signed_url
     return
 
 
@@ -391,9 +421,17 @@ def upload_existing_files_s3(name):
         if not key:
             return
 
-        if doc.is_private:
-            method = "frappe_s3_attachment.controller.generate_file"
-            file_url = """/api/method/{0}?key={1}""".format(method, key)
+        # Mirror file_upload_to_s3: redirect-by-default for both private and
+        # public files; only emit a direct CDN URL when public_endpoint_url
+        # is set.
+        public_endpoint = (
+            s3_upload.s3_settings_doc.get("public_endpoint_url") or ""
+        ).strip()
+        if doc.is_private or not public_endpoint:
+            method_path = "frappe_s3_attachment.controller.generate_file"
+            file_url = "/api/method/{0}?key={1}&file_name={2}".format(
+                method_path, key, doc.file_name or ""
+            )
         else:
             file_url = s3_upload.get_public_url(key)
 
@@ -682,17 +720,17 @@ def test_s3_connection():
             add("Public read flow (anonymous GET)", FAIL,
                 frappe.utils.escape_html(str(e))[:400])
     else:
-        # No public endpoint set — this is the most-missed setting.
-        # Treat as WARN, not FAIL: a setup that uploads only private files
-        # is legitimate and doesn't need a public host.
-        add("Public read flow (anonymous GET)", WARN,
-            "<b>CDN / Public URL</b> is not set. Public files "
-            "(<i>is_private=0</i>) will be stored in the bucket but their "
-            "<code>file_url</code> will be unreachable to browsers — they "
-            "need an anonymous-read host. "
-            "On Cloudflare R2: bind a custom domain or enable the Public "
-            "Development URL, then paste it into <b>CDN / Public URL "
-            "(Optional)</b>. Skip this only if you upload private files exclusively.")
+        # No public endpoint set — this is the universal default. Public
+        # files are served via the Frappe-side signed-URL redirect, which
+        # works on every S3-compatible provider. Treat as PASS with an
+        # informational note, not WARN.
+        add("Public read flow (Frappe redirect)", PASS,
+            "<b>CDN / Public URL</b> is not set — using the universal "
+            "redirect path. Public files will be served via "
+            "<code>/api/method/frappe_s3_attachment.controller.generate_file</code> "
+            "with a fresh signed URL on each request. Works on every "
+            "S3-compatible provider. Set <b>CDN / Public URL</b> only if "
+            "you want browser-cacheable delivery from a CDN.")
 
     # ── Stage 6: Delete (cleanup) ──────────────────────────────────────────
     try:
@@ -782,6 +820,62 @@ def rewrite_public_file_urls(old_prefix=None, new_prefix=None, dry_run=1):
                WHERE file_url LIKE %s""",
             (new_prefix, len(old_prefix) + 1, like_pattern),
         )
+        frappe.db.commit()
+
+    return {"count": count, "sample": sample, "dry_run": False}
+
+
+@frappe.whitelist()
+def migrate_urls_to_redirect(dry_run=1):
+    """
+    One-shot migration: convert direct ``https://...`` File URLs (from older
+    public-file uploads) to the universal redirect form
+    ``/api/method/frappe_s3_attachment.controller.generate_file?key=...&file_name=...``.
+
+    Targets only rows whose ``content_hash`` is set, i.e. files that were
+    actually uploaded to S3 by this app. Idempotent: rows that already use
+    the redirect form (or any non-http URL) are skipped by the SQL filter.
+
+    Use this after upgrading to a build where public files default to the
+    redirect endpoint, so legacy direct URLs converge to the same shape and
+    keep working without a configured CDN host.
+
+    :param dry_run: when truthy, return the count + a sample without
+                    writing. When falsy, perform the UPDATE.
+    :returns: ``{count, sample, dry_run}``
+    """
+    frappe.only_for("System Manager")
+
+    rows = frappe.db.sql(
+        """SELECT name, content_hash, file_name, file_url
+           FROM `tabFile`
+           WHERE file_url LIKE 'http%'
+             AND content_hash IS NOT NULL
+             AND content_hash != ''""",
+        as_dict=True,
+    )
+
+    method_path = "frappe_s3_attachment.controller.generate_file"
+    converted = []
+    for r in rows:
+        new_url = "/api/method/{0}?key={1}&file_name={2}".format(
+            method_path, r["content_hash"], r["file_name"] or ""
+        )
+        converted.append(
+            {"name": r["name"], "old": r["file_url"], "new": new_url}
+        )
+
+    count = len(converted)
+    sample = converted[:5]
+
+    if int(dry_run):
+        return {"count": count, "sample": sample, "dry_run": True}
+
+    for r in converted:
+        frappe.db.set_value(
+            "File", r["name"], "file_url", r["new"], update_modified=False
+        )
+    if count:
         frappe.db.commit()
 
     return {"count": count, "sample": sample, "dry_run": False}

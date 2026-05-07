@@ -64,8 +64,8 @@
   {
    "fieldname": "public_endpoint_url",
    "fieldtype": "Data",
-   "label": "CDN / Public URL (Optional)",
-   "description": "Hostname browsers use to fetch public files (is_private=0). Examples: https://cdn.example.com, https://pub-xxx.r2.dev. REQUIRED for Cloudflare R2 and Oracle Object Storage — their S3-API endpoints refuse anonymous reads. Optional for AWS S3 / MinIO / DigitalOcean Spaces — leave blank to derive a public URL from the bucket directly. Must include scheme; a bare hostname is auto-prefixed with https:// on save. Same bucket as Endpoint URL — this is just a different hostname pointing at it. After changing this, click Rewrite Stored File URLs to update existing rows."
+   "label": "CDN / Public URL (Optional, Performance Only)",
+   "description": "TRULY OPTIONAL — leave blank for a universal setup that works on every S3-compatible provider. By default, public files are served via a Frappe-side signed-URL redirect (1 extra hop, no CDN caching). Set this field only if you want public files served directly from a CDN/public hostname for browser-cacheable delivery. Examples: https://cdn.example.com, https://pub-xxx.r2.dev. Must point at the same bucket as Endpoint URL. Must include scheme; a bare hostname is auto-prefixed with https:// on save."
   },
   {
    "fieldname": "folder_name",
