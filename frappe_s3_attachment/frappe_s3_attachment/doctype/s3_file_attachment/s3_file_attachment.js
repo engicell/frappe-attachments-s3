@@ -55,19 +55,26 @@ frappe.ui.form.on('S3 File Attachment', {
 			method: "frappe_s3_attachment.controller.test_s3_connection",
 			btn: frm.fields_dict.test_s3_connection.$btn,
 			freeze: true,
-			freeze_message: __("Testing S3 connection..."),
+			freeze_message: __("Running full S3 health check..."),
 			callback: function(r) {
+				// Server returns a structured report:
+				//   { title, indicator: 'green'|'orange'|'red', message: <html> }
+				// Render it via frappe.msgprint with wide:true and an indicator
+				// so the modal stays open until the user clicks Close.
 				if (r.message && r.message.message) {
 					frappe.msgprint({
-						title: r.message.title || __("S3 Connection Test"),
-						indicator: 'green',
-						message: r.message.message
+						title: r.message.title || __("S3 Health Check"),
+						indicator: r.message.indicator || 'green',
+						message: r.message.message,
+						wide: true,
+						as_table: false
 					});
 				} else if (r.exc) {
 					frappe.msgprint({
 						title: __("Error"),
 						indicator: 'red',
-						message: __(r.exc)
+						message: __(r.exc),
+						wide: true
 					});
 				}
 			},
@@ -75,7 +82,8 @@ frappe.ui.form.on('S3 File Attachment', {
 				frappe.msgprint({
 					title: __("Error"),
 					indicator: 'red',
-					message: __("Request failed. Check browser console.")
+					message: __("Request failed. Check browser console."),
+					wide: true
 				});
 			}
 		});

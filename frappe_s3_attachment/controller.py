@@ -454,125 +454,246 @@ def delete_from_cloud(doc, method):
 @frappe.whitelist()
 def test_s3_connection():
     """
-    Test S3 Connection in three stages:
-    1. head_bucket  - verify credentials/endpoint (no upload = no Content-Length needed)
-    2. list_objects - verify list permissions
-    3. Presigned PUT via requests library - test actual upload without boto3 chunked transfer
-    """
-    if not frappe.db.get_single_value("S3 File Attachment", "enabled"):
-        frappe.msgprint(frappe._("Please enable S3 File Attachment settings first."))
-        return False
+    Full end-to-end S3 health check.
 
+    Runs every code path the app actually uses, end-to-end against the live
+    bucket, and returns a structured report. Intended to be rendered by the
+    JS form handler in a sticky `frappe.msgprint({wide:true, indicator:..})`
+    dialog that the user must dismiss explicitly.
+
+    Stages:
+      1. Settings sanity      — fields present + provider-specific advice
+      2. Credentials + LIST   — list_objects_v2 (no Content-Length, works on
+                                 every provider including Oracle OCI)
+      3. Upload (PUT)         — presigned PUT via requests (bypasses boto3
+                                 chunked-transfer issues)
+      4. Private read flow    — presigned GET; verify body matches what we
+                                 wrote (this is the path used by every
+                                 `is_private=1` file in the system)
+      5. Public read flow     — anonymous GET against `public_endpoint_url`
+                                 if set; SKIP with a clear warning if not.
+                                 Public files in the system will be
+                                 unreachable to browsers without this.
+      6. Delete (DELETE)      — clean up the test object and verify it is
+                                 actually gone via head_object 404.
+
+    A failure short-circuits the run for any stage that would invalidate
+    later stages (no point testing reads if the upload didn't happen).
+    Stages that are non-fatal (missing public host, ACL config advisory)
+    surface as WARN, not FAIL.
+
+    Returns:
+        dict with keys: title, indicator (green|orange|red), message (HTML).
+    """
+    import requests as req_lib
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    PASS, FAIL, WARN, SKIP = "pass", "fail", "warn", "skip"
+    ICON = {
+        PASS: '<span style="color:#28a745">&#10003;</span>',  # ✓
+        FAIL: '<span style="color:#dc3545">&#10007;</span>',  # ✗
+        WARN: '<span style="color:#fd7e14">&#9888;</span>',   # ⚠
+        SKIP: '<span style="color:#6c757d">&#8854;</span>',   # ⊘
+    }
+    LABEL = {PASS: "PASS", FAIL: "FAIL", WARN: "WARN", SKIP: "SKIP"}
+    stages = []
+
+    def add(name, status, detail=""):
+        stages.append({"name": name, "status": status, "detail": detail})
+
+    def render():
+        any_fail = any(s["status"] == FAIL for s in stages)
+        any_warn = any(s["status"] == WARN for s in stages)
+        if any_fail:
+            indicator, banner = "red", '<b style="color:#dc3545">S3 Health Check FAILED</b>'
+        elif any_warn:
+            indicator, banner = "orange", '<b style="color:#fd7e14">S3 Health Check passed with WARNINGS</b>'
+        else:
+            indicator, banner = "green", '<b style="color:#28a745">All S3 checks passed</b>'
+        rows = "".join(
+            f"<tr>"
+            f'<td style="white-space:nowrap;padding:4px 10px">{ICON[s["status"]]} <b>{LABEL[s["status"]]}</b></td>'
+            f'<td style="padding:4px 10px"><b>{frappe.utils.escape_html(s["name"])}</b></td>'
+            f'<td style="padding:4px 10px">{s["detail"]}</td>'
+            f"</tr>"
+            for s in stages
+        )
+        message = (
+            f'<div style="font-size:13px;line-height:1.5">'
+            f'<p style="margin:0 0 10px 0">{banner}</p>'
+            f'<table style="border-collapse:collapse;width:100%">{rows}</table>'
+            f'</div>'
+        )
+        return {"title": "S3 Health Check", "indicator": indicator, "message": message}
+
+    # ── Pre-flight: enabled flag ────────────────────────────────────────────
+    if not frappe.db.get_single_value("S3 File Attachment", "enabled"):
+        add("Settings", FAIL, "S3 File Attachment is not enabled. Tick "
+                              "<b>Enable S3 Attachment</b> and save first.")
+        return render()
+
+    # ── Stage 1: Settings sanity ────────────────────────────────────────────
     try:
         s3 = S3Operations()
-
-        # ── Stage 1: credentials + bucket access via list_objects_v2 ─────────
-        # NOTE: We intentionally avoid head_bucket here. Oracle OCI's S3
-        # compatibility layer incorrectly throws MissingContentLength on
-        # HEAD requests. list_objects_v2 is a plain HTTP GET with no body
-        # and no Content-Length requirement — works on ALL providers.
-        try:
-            s3.S3_CLIENT.list_objects_v2(Bucket=s3.BUCKET, MaxKeys=1)
-        except Exception as e:
-            error_str = str(e)
-            if "NoSuchBucket" in error_str or "does not exist" in error_str:
-                msg = (
-                    f"<b>Stage 1 Failed: Bucket '{s3.BUCKET}' not found.</b><br><br>"
-                    f"Please check your Bucket Name setting.<br><br>Error: {error_str}"
-                )
-            elif "AccessDenied" in error_str or "403" in error_str:
-                msg = (
-                    f"<b>Stage 1 Failed: Access Denied to bucket '{s3.BUCKET}'.</b><br><br>"
-                    f"Credentials are wrong or do not have List permission.<br><br>Error: {error_str}"
-                )
-            else:
-                msg = (
-                    f"<b>Stage 1 Failed: Cannot reach S3 endpoint.</b><br><br>"
-                    f"Check your Endpoint URL, Region, and credentials.<br><br>Error: {error_str}"
-                )
-            frappe.throw(msg, title="S3 Health Check")
-
-        # ── Stage 3: upload via presigned PUT + requests library ─────────────
-        # requests sets Content-Length automatically from the body bytes —
-        # completely bypasses boto3 internal chunked transfer encoding.
-        import requests as req_lib
-
-        test_key = "s3_connection_test_" + frappe.generate_hash()[:8] + ".txt"
-        if s3.folder_name:
-            test_key = s3.folder_name.strip("/") + "/" + test_key
-
-        body_bytes = b"S3 Connection Test - ERPNext S3 Attachment"
-        upload_ok = False
-        upload_error = ""
-
-        try:
-            presigned_put = s3.S3_CLIENT.generate_presigned_url(
-                "put_object",
-                Params={
-                    "Bucket": s3.BUCKET,
-                    "Key": test_key,
-                    "ContentType": "text/plain",
-                },
-                ExpiresIn=120,
-            )
-            resp = req_lib.put(
-                presigned_put,
-                data=body_bytes,
-                headers={"Content-Type": "text/plain"},
-                verify=s3.verify_ssl,
-                timeout=30,
-            )
-            if resp.status_code in (200, 201, 204):
-                upload_ok = True
-            else:
-                upload_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
-        except Exception as e:
-            upload_error = str(e)
-
-        # ── Build result ──────────────────────────────────────────────────────
-        if upload_ok:
-            public_url = s3.get_public_url(test_key)
-            presigned_url = s3.get_url(test_key)
-            msg = f"""
-            <div style="font-size:14px;">
-                <p style="color:green;font-weight:bold;">&#10003; All S3 Checks Passed!</p>
-                <ul>
-                    <li>&#10003; Bucket reachable &amp; credentials valid</li>
-                    <li>&#10003; List objects permission OK</li>
-                    <li>&#10003; Test file uploaded successfully</li>
-                </ul>
-                <p><b>Test file links:</b></p>
-                <ul>
-                    <li><a href="{public_url}" target="_blank"><b>Public URL</b></a>
-                        (works if bucket is Public-Read)</li>
-                    <li><a href="{presigned_url}" target="_blank"><b>Private Pre-signed URL</b></a></li>
-                </ul>
-            </div>
-            """
-        else:
-            msg = f"""
-            <div style="font-size:14px;">
-                <p style="color:orange;font-weight:bold;">&#9888; Partial Success</p>
-                <ul>
-                    <li>&#10003; Bucket reachable &amp; credentials valid</li>
-                    <li>&#10003; List objects permission OK</li>
-                    <li>&#10007; Upload test failed: {upload_error}</li>
-                </ul>
-                <p>Credentials and endpoint are correct. Upload failure may be
-                due to bucket write permissions or ACL policy.</p>
-            </div>
-            """
-
-        frappe.msgprint(msg, title="S3 Health Check")
-        return True
-
-    except frappe.ValidationError:
-        raise
     except Exception as e:
         import traceback
-
         frappe.log_error(message=traceback.format_exc(), title="S3 Test Failed")
-        frappe.throw(
-            f"<b>Connection to S3 Failed!</b><br><br>Error: {str(e)}",
-            title="S3 Health Check",
-        )
+        add("Settings", FAIL, f"Could not initialise S3 client: "
+                              f"{frappe.utils.escape_html(str(e))}")
+        return render()
+
+    settings = s3.s3_settings_doc
+    endpoint = (settings.endpoint_url or "").rstrip("/")
+    public_endpoint = (settings.get("public_endpoint_url") or "").rstrip("/")
+
+    sanity_lines = []
+    if not settings.bucket_name:
+        sanity_lines.append("Bucket Name is empty.")
+    if not settings.aws_key:
+        sanity_lines.append("Access Key ID is empty.")
+    if not settings.get_password("aws_secret", raise_exception=False):
+        sanity_lines.append("Secret Access Key is empty.")
+    # provider-specific advisories
+    if "r2.cloudflarestorage" in endpoint and not settings.get("disable_acl"):
+        sanity_lines.append(
+            "Endpoint looks like Cloudflare R2 but <b>Disable Object ACL</b> "
+            "is OFF. R2 will reject signed uploads with x-amz-acl. "
+            "Tick the checkbox.")
+    if sanity_lines:
+        critical = any("empty" in l for l in sanity_lines)
+        add("Settings", FAIL if critical else WARN, "<br>".join(sanity_lines))
+        if critical:
+            return render()
+    else:
+        add("Settings", PASS, f"Endpoint: <code>{frappe.utils.escape_html(endpoint or 'native AWS')}</code>")
+
+    # ── Stage 2: credentials + LIST ────────────────────────────────────────
+    try:
+        s3.S3_CLIENT.list_objects_v2(Bucket=s3.BUCKET, MaxKeys=1)
+        add("Credentials & LIST permission", PASS,
+            f"Bucket <code>{frappe.utils.escape_html(s3.BUCKET)}</code> reachable.")
+    except Exception as e:
+        msg = str(e)
+        if "NoSuchBucket" in msg or "does not exist" in msg:
+            hint = "Bucket does not exist. Check the <b>Bucket Name</b>."
+        elif "AccessDenied" in msg or "403" in msg:
+            hint = ("Access denied. Credentials are wrong, or the IAM/token "
+                    "is missing the LIST permission.")
+        elif "InvalidAccessKeyId" in msg or "SignatureDoesNotMatch" in msg:
+            hint = "Access Key or Secret is wrong (or copied with whitespace)."
+        else:
+            hint = "Endpoint URL or Region may be wrong."
+        add("Credentials & LIST permission", FAIL,
+            f"{hint}<br><small>{frappe.utils.escape_html(msg)[:400]}</small>")
+        return render()
+
+    # ── Stage 3: Upload via presigned PUT ──────────────────────────────────
+    test_key = "s3_connection_test_" + frappe.generate_hash()[:8] + ".txt"
+    if s3.folder_name:
+        test_key = s3.folder_name.strip("/") + "/" + test_key
+    body_bytes = b"S3 Connection Test - ERPNext S3 Attachment"
+
+    try:
+        put_args = {"Bucket": s3.BUCKET, "Key": test_key, "ContentType": "text/plain"}
+        # Mirror the upload path's ACL behaviour: only sign with public-read
+        # if both not-private semantics AND user has not opted out via
+        # `disable_acl` (R2/Oracle compat).
+        will_send_acl = not settings.get("disable_acl")
+        if will_send_acl:
+            put_args["ACL"] = "public-read"
+        presigned_put = s3.S3_CLIENT.generate_presigned_url(
+            "put_object", Params=put_args, ExpiresIn=120)
+        resp = req_lib.put(
+            presigned_put, data=body_bytes,
+            headers={"Content-Type": "text/plain"},
+            verify=s3.verify_ssl, timeout=30)
+        if resp.status_code in (200, 201, 204):
+            add("Upload (PUT)", PASS,
+                f"Stored at <code>{frappe.utils.escape_html(test_key)}</code> "
+                f"({len(body_bytes)} bytes)" +
+                (" with ACL=public-read" if will_send_acl else " without ACL"))
+        else:
+            extra = ""
+            if will_send_acl and "SignatureDoesNotMatch" in resp.text:
+                extra = ("<br><b>Likely cause:</b> provider does not support "
+                         "x-amz-acl (e.g. Cloudflare R2). Tick "
+                         "<b>Disable Object ACL</b> and retest.")
+            add("Upload (PUT)", FAIL,
+                f"HTTP {resp.status_code}<br>"
+                f"<small>{frappe.utils.escape_html(resp.text[:400])}</small>{extra}")
+            return render()
+    except Exception as e:
+        add("Upload (PUT)", FAIL, frappe.utils.escape_html(str(e))[:400])
+        return render()
+
+    # ── Stage 4: Private read flow (presigned GET) ─────────────────────────
+    try:
+        signed_get = s3.S3_CLIENT.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": s3.BUCKET, "Key": test_key},
+            ExpiresIn=120)
+        r = req_lib.get(signed_get, verify=s3.verify_ssl, timeout=30)
+        if r.status_code == 200 and r.content == body_bytes:
+            add("Private read flow (presigned GET)", PASS,
+                "Signed URL returned the file contents byte-for-byte. "
+                "All <i>is_private=1</i> uploads will work end-to-end.")
+        else:
+            add("Private read flow (presigned GET)", FAIL,
+                f"HTTP {r.status_code}, got {len(r.content)} bytes "
+                f"(expected {len(body_bytes)})")
+    except Exception as e:
+        add("Private read flow (presigned GET)", FAIL,
+            frappe.utils.escape_html(str(e))[:400])
+
+    # ── Stage 5: Public read flow ──────────────────────────────────────────
+    if public_endpoint:
+        public_url = f"{public_endpoint}/{test_key}"
+        try:
+            r = req_lib.get(public_url, verify=s3.verify_ssl, timeout=30,
+                            allow_redirects=True)
+            if r.status_code == 200 and r.content == body_bytes:
+                add("Public read flow (anonymous GET)", PASS,
+                    f'Anonymous GET against <a href="{frappe.utils.escape_html(public_endpoint)}" '
+                    f'target="_blank"><code>{frappe.utils.escape_html(public_endpoint)}</code></a> '
+                    f"returned the file. Public files are reachable in browsers.")
+            else:
+                add("Public read flow (anonymous GET)", FAIL,
+                    f"GET <code>{frappe.utils.escape_html(public_url)}</code> "
+                    f"returned HTTP {r.status_code}. Verify the public host "
+                    f"actually maps to this bucket (R2 custom domain bound? "
+                    f"Public dev URL enabled?).")
+        except Exception as e:
+            add("Public read flow (anonymous GET)", FAIL,
+                frappe.utils.escape_html(str(e))[:400])
+    else:
+        # No public endpoint set — this is the most-missed setting.
+        # Treat as WARN, not FAIL: a setup that uploads only private files
+        # is legitimate and doesn't need a public host.
+        add("Public read flow (anonymous GET)", WARN,
+            "<b>CDN / Public URL</b> is not set. Public files "
+            "(<i>is_private=0</i>) will be stored in the bucket but their "
+            "<code>file_url</code> will be unreachable to browsers — they "
+            "need an anonymous-read host. "
+            "On Cloudflare R2: bind a custom domain or enable the Public "
+            "Development URL, then paste it into <b>CDN / Public URL "
+            "(Optional)</b>. Skip this only if you upload private files exclusively.")
+
+    # ── Stage 6: Delete (cleanup) ──────────────────────────────────────────
+    try:
+        s3.S3_CLIENT.delete_object(Bucket=s3.BUCKET, Key=test_key)
+        # verify it's actually gone
+        try:
+            s3.S3_CLIENT.head_object(Bucket=s3.BUCKET, Key=test_key)
+            add("Delete (cleanup)", FAIL,
+                "Delete returned OK but object still exists. Bucket may "
+                "have versioning or object lock enabled.")
+        except Exception:
+            add("Delete (cleanup)", PASS,
+                "Test object removed and verified gone.")
+    except Exception as e:
+        add("Delete (cleanup)", FAIL,
+            "Could not delete test object — credentials may lack DELETE "
+            "permission. Old uploads may stay in the bucket forever.<br>"
+            f"<small>{frappe.utils.escape_html(str(e))[:400]}</small>")
+
+    return render()
