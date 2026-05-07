@@ -6,6 +6,7 @@ import random
 import re
 import string
 import urllib3
+from urllib.parse import quote, urlparse
 
 import boto3
 
@@ -135,10 +136,21 @@ class S3Operations(object):
         - Standard AWS without a custom endpoint: respects force_path_style.
           Path-style  → ``https://s3.{region}.amazonaws.com/{bucket}/{key}``
           Virtual     → ``https://{bucket}.s3.{region}.amazonaws.com/{key}``
+
+        The ``key`` is URL-encoded so spaces / parentheses / unicode in the
+        object name don't produce technically-invalid URLs that some browsers
+        or CDNs reject. Slashes are preserved so the path structure is intact.
         """
-        public_endpoint = self.s3_settings_doc.get("public_endpoint_url")
+        encoded_key = quote(key, safe="/")
+
+        public_endpoint = self.s3_settings_doc.get("public_endpoint_url") or ""
+        public_endpoint = public_endpoint.strip().rstrip("/")
         if public_endpoint:
-            return "{}/{}".format(public_endpoint.rstrip("/"), key)
+            # Safety net for setups that bypassed the doctype validate() —
+            # always emit an absolute URL, never a relative one.
+            if not public_endpoint.lower().startswith(("http://", "https://")):
+                public_endpoint = "https://" + public_endpoint
+            return "{}/{}".format(public_endpoint, encoded_key)
 
         endpoint_url = self.s3_settings_doc.endpoint_url or None
         region = self.s3_settings_doc.region_name or "us-east-1"
@@ -146,20 +158,24 @@ class S3Operations(object):
 
         if endpoint_url:
             if force_path:
-                return "{}/{}/{}".format(endpoint_url.rstrip("/"), self.BUCKET, key)
+                return "{}/{}/{}".format(
+                    endpoint_url.rstrip("/"), self.BUCKET, encoded_key
+                )
             else:
-                from urllib.parse import urlparse
-
                 parsed = urlparse(endpoint_url)
                 return "{}://{}.{}/{}".format(
-                    parsed.scheme, self.BUCKET, parsed.netloc, key
+                    parsed.scheme, self.BUCKET, parsed.netloc, encoded_key
                 )
 
         # Native AWS
         if force_path:
-            return "https://s3.{}.amazonaws.com/{}/{}".format(region, self.BUCKET, key)
+            return "https://s3.{}.amazonaws.com/{}/{}".format(
+                region, self.BUCKET, encoded_key
+            )
         else:
-            return "https://{}.s3.{}.amazonaws.com/{}".format(self.BUCKET, region, key)
+            return "https://{}.s3.{}.amazonaws.com/{}".format(
+                self.BUCKET, region, encoded_key
+            )
 
     # ------------------------------------------------------------------
     # Core S3 operations
@@ -697,3 +713,75 @@ def test_s3_connection():
             f"<small>{frappe.utils.escape_html(str(e))[:400]}</small>")
 
     return render()
+
+
+# ------------------------------------------------------------------
+# Rewrite stored file_url prefixes (e.g. after changing the public host)
+# ------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def rewrite_public_file_urls(old_prefix=None, new_prefix=None, dry_run=1):
+    """
+    Bulk-rewrite ``tabFile.file_url`` rows whose value starts with
+    ``old_prefix`` to start with ``new_prefix`` instead.
+
+    Use case: the public hostname (CDN / Public URL) was changed or set after
+    files were already uploaded. Existing rows still carry the old hostname
+    (or the S3-API hostname, which doesn't serve anonymous reads on R2 /
+    Oracle), so browsers 404 on them. This method updates them in one pass.
+
+    Both prefixes must start with ``http://`` or ``https://`` so private file
+    URLs (which begin with ``/api/method/...``) are never matched.
+
+    :param old_prefix: existing URL prefix to match (required).
+    :param new_prefix: replacement prefix (required).
+    :param dry_run:    when truthy, return the count + a sample without
+                       writing. When falsy, perform the UPDATE.
+    :returns: ``{count, sample, dry_run}``
+    """
+    if not old_prefix or not new_prefix:
+        frappe.throw(frappe._("old_prefix and new_prefix are both required."))
+
+    old_prefix = str(old_prefix).strip().rstrip("/")
+    new_prefix = str(new_prefix).strip().rstrip("/")
+
+    if not old_prefix.lower().startswith(("http://", "https://")):
+        frappe.throw(
+            frappe._("old_prefix must be an absolute URL (http:// or https://).")
+        )
+    if not new_prefix.lower().startswith(("http://", "https://")):
+        frappe.throw(
+            frappe._("new_prefix must be an absolute URL (http:// or https://).")
+        )
+    if old_prefix == new_prefix:
+        return {"count": 0, "sample": [], "dry_run": bool(int(dry_run))}
+
+    frappe.only_for("System Manager")
+
+    like_pattern = old_prefix + "%"
+    rows = frappe.db.sql(
+        """SELECT name, file_url FROM `tabFile` WHERE file_url LIKE %s""",
+        (like_pattern,),
+        as_dict=True,
+    )
+    count = len(rows)
+    sample = [
+        {"name": r["name"], "old": r["file_url"],
+         "new": new_prefix + r["file_url"][len(old_prefix):]}
+        for r in rows[:5]
+    ]
+
+    if int(dry_run):
+        return {"count": count, "sample": sample, "dry_run": True}
+
+    if count:
+        frappe.db.sql(
+            """UPDATE `tabFile`
+               SET file_url = CONCAT(%s, SUBSTRING(file_url, %s))
+               WHERE file_url LIKE %s""",
+            (new_prefix, len(old_prefix) + 1, like_pattern),
+        )
+        frappe.db.commit()
+
+    return {"count": count, "sample": sample, "dry_run": False}

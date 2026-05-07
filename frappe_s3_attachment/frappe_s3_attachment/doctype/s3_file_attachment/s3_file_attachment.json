@@ -59,13 +59,13 @@
    "fieldname": "endpoint_url",
    "fieldtype": "Data",
    "label": "Endpoint URL",
-   "description": "Custom S3-compatible endpoint. Examples: Cloudflare R2 — https://&lt;account_id&gt;.r2.cloudflarestorage.com | Oracle Object Storage — https://&lt;namespace&gt;.compat.objectstorage.&lt;region&gt;.oraclecloud.com | MinIO — http://localhost:9000 | Leave blank for native AWS S3."
+   "description": "S3-API endpoint used for all credentialed operations (uploads, signed reads, deletes). Must include scheme — a bare hostname is auto-prefixed with https:// on save. Examples: Cloudflare R2 — https://&lt;account_id&gt;.r2.cloudflarestorage.com | Oracle Object Storage — https://&lt;namespace&gt;.compat.objectstorage.&lt;region&gt;.oraclecloud.com | MinIO — http://localhost:9000 | Leave blank for native AWS S3."
   },
   {
    "fieldname": "public_endpoint_url",
    "fieldtype": "Data",
    "label": "CDN / Public URL (Optional)",
-   "description": "Used only for public files. Enter your CDN or public domain (e.g. https://cdn.mywebsite.com or https://pub-xxx.r2.dev). If left blank, it falls back to the Endpoint URL."
+   "description": "Hostname browsers use to fetch public files (is_private=0). Examples: https://cdn.example.com, https://pub-xxx.r2.dev. REQUIRED for Cloudflare R2 and Oracle Object Storage — their S3-API endpoints refuse anonymous reads. Optional for AWS S3 / MinIO / DigitalOcean Spaces — leave blank to derive a public URL from the bucket directly. Must include scheme; a bare hostname is auto-prefixed with https:// on save. Same bucket as Endpoint URL — this is just a different hostname pointing at it. After changing this, click Rewrite Stored File URLs to update existing rows."
   },
   {
    "fieldname": "folder_name",
@@ -107,6 +107,12 @@
    "fieldname": "migrate_existing_files",
    "fieldtype": "Button",
    "label": "Migrate Existing Files"
+  },
+  {
+   "fieldname": "rewrite_file_urls",
+   "fieldtype": "Button",
+   "label": "Rewrite Stored File URLs",
+   "description": "Bulk-rewrite the file_url of public File rows when you've changed the public hostname after files were already uploaded. Prompts for the old prefix and previews the change before writing."
   },
   {
    "fieldname": "test_s3_connection",
