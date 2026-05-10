@@ -295,9 +295,15 @@ def file_upload_to_s3(doc, method):
     site_path = frappe.utils.get_site_path()
     parent_doctype = doc.attached_to_doctype or "File"
     parent_name = doc.attached_to_name
+    # Doctypes whose validate flow re-opens the uploaded file from disk via
+    # ``open(file_url, "rb")`` (Frappe's importer reads bytes locally rather
+    # than fetching through the file_url). If we ship those uploads to S3 and
+    # delete the local copy, the next save crashes with FileNotFoundError on
+    # the rewritten ``/api/method/...generate_file?key=...`` URL. Keep them
+    # local; they are short-lived working files anyway.
     ignore_s3_upload_for_doctype = frappe.local.conf.get(
         "ignore_s3_upload_for_doctype"
-    ) or ["Data Import"]
+    ) or ["Data Import", "Bank Statement Import", "Chart of Accounts Importer"]
     if parent_doctype not in ignore_s3_upload_for_doctype:
         if not doc.is_private:
             file_path = site_path + "/public" + path
