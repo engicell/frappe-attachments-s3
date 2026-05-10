@@ -292,6 +292,12 @@ def file_upload_to_s3(doc, method):
         return
 
     path = doc.file_url
+    # Idempotency: if the URL is already in the redirect form, the file has
+    # already been uploaded by an earlier hook run. Bail out instead of
+    # trying to re-open a path that no longer exists locally.
+    if path and s3_file_regex_match(path):
+        return
+
     site_path = frappe.utils.get_site_path()
     parent_doctype = doc.attached_to_doctype or "File"
     parent_name = doc.attached_to_name
@@ -300,7 +306,8 @@ def file_upload_to_s3(doc, method):
     # than fetching through the file_url). If we ship those uploads to S3 and
     # delete the local copy, the next save crashes with FileNotFoundError on
     # the rewritten ``/api/method/...generate_file?key=...`` URL. Keep them
-    # local; they are short-lived working files anyway.
+    # local; they are short-lived working files anyway. Operators can extend
+    # this list via the ``ignore_s3_upload_for_doctype`` site config key.
     ignore_s3_upload_for_doctype = frappe.local.conf.get(
         "ignore_s3_upload_for_doctype"
     ) or ["Data Import", "Bank Statement Import", "Chart of Accounts Importer"]

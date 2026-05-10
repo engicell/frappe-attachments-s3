@@ -201,6 +201,42 @@ layout (per-company flag included).
 
 ---
 
+## Importer doctypes are kept local
+
+A few Frappe / ERPNext doctypes use Data Import's flow, which re-reads
+the uploaded template from local disk during `validate()` (via
+`file_doc.get_content()` → `open(...)`). Files attached to those
+doctypes are deliberately **not** uploaded to S3 — if they were, the
+local copy would be deleted and the very next save would crash with
+`FileNotFoundError` on the rewritten `/api/method/...generate_file?key=…`
+URL.
+
+Out of the box the following parents stay local:
+
+- `Data Import`
+- `Bank Statement Import`
+- `Chart of Accounts Importer`
+
+If you have a custom importer doctype with the same on-disk read
+pattern, extend the list in your site config (`site_config.json` /
+`common_site_config.json`):
+
+```json
+{
+  "ignore_s3_upload_for_doctype": [
+    "Data Import",
+    "Bank Statement Import",
+    "Chart of Accounts Importer",
+    "My Custom Importer"
+  ]
+}
+```
+
+When set, the config value **replaces** the built-in list — include
+every doctype you want to keep local.
+
+---
+
 ## Migrating Existing Files
 
 ### Local files → S3
