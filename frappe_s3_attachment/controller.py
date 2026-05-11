@@ -311,6 +311,28 @@ def file_upload_to_s3(doc, method):
     ignore_s3_upload_for_doctype = frappe.local.conf.get(
         "ignore_s3_upload_for_doctype"
     ) or ["Data Import", "Bank Statement Import", "Chart of Accounts Importer"]
+
+    # Loose-file safety net. Frappe's importer wizard (Data Import, the
+    # per-doctype "Import" action used by Bank Transaction, etc.) creates the
+    # File row BEFORE the parent Data Import doc, so the doctype check above
+    # sees attached_to_doctype="" and happily ships the CSV to S3. The
+    # importer then re-opens the file_url with open() and crashes with
+    # FileNotFoundError on the rewritten /api/method/...generate_file?... URL.
+    # Files with no parent doctype AND an importer-style extension are
+    # virtually always working files for an import-in-progress — keep them
+    # local. Operators can override via the
+    # ``ignore_s3_upload_for_extensions`` site config key (set to [] to
+    # disable this fallback entirely).
+    ignore_s3_upload_for_extensions = frappe.local.conf.get(
+        "ignore_s3_upload_for_extensions"
+    )
+    if ignore_s3_upload_for_extensions is None:
+        ignore_s3_upload_for_extensions = [".csv", ".xls", ".xlsx", ".json"]
+    if not doc.attached_to_doctype:
+        file_ext = os.path.splitext(doc.file_name or "")[1].lower()
+        if file_ext in ignore_s3_upload_for_extensions:
+            return
+
     if parent_doctype not in ignore_s3_upload_for_doctype:
         if not doc.is_private:
             file_path = site_path + "/public" + path
